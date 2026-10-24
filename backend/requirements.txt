@@ -1,0 +1,22 @@
+# ResQAI backend — pinned to versions verified on Python 3.11.
+# Install:  py -3.11 -m venv .venv && .venv/Scripts/pip install -r requirements.txt
+
+# Real-time voice agent: Pipecat + WebRTC (aiortc) + Gemini Live + Silero VAD.
+pipecat-ai[webrtc,google,silero]==1.13.0
+
+# Web API
+fastapi==0.156.4
+uvicorn[standard]==0.54.0
+
+# Data / persistence
+sqlmodel==0.0.48
+python-dotenv==1.2.4
+
+# Phone-number normalization/validation to E.164 (emergency contacts + auth).
+phonenumbers==9.0.19
+
+# Live retrieval (weather / nearby hospitals / advisories) + test client.
+httpx==0.28.1
+
+# Tests
+pytest==9.1.1

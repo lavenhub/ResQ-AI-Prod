@@ -1,0 +1,76 @@
+.resqai-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 12px 20px;
+  border: 0;
+  border-radius: 14px;
+  background: #dc2626;
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgb(220 38 38 / 22%);
+}
+.resqai-trigger:hover { background: #b91c1c; }
+.resqai-trigger:focus-visible, .resqai-close:focus-visible {
+  outline: 3px solid #fca5a5;
+  outline-offset: 3px;
+}
+.resqai-trigger__pulse {
+  width: 9px; height: 9px; border-radius: 50%;
+  background: #fff; box-shadow: 0 0 0 5px rgb(255 255 255 / 18%);
+}
+.resqai-backdrop {
+  position: fixed; inset: 0; z-index: 99999;
+  display: grid; place-items: center;
+  padding: 16px; background: rgb(3 7 18 / 72%);
+}
+.resqai-dialog {
+  display: flex; flex-direction: column; gap: 12px;
+  width: min(100%, 620px); height: min(88dvh, 780px);
+  padding: 18px; overflow: hidden;
+  border: 1px solid #e5e7eb; border-radius: 20px;
+  background: #fff; color: #111827;
+  box-shadow: 0 24px 80px rgb(0 0 0 / 30%);
+}
+.resqai-dialog__header {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
+}
+.resqai-eyebrow {
+  margin: 0 0 5px; color: #b91c1c; font-size: 10px;
+  font-weight: 800; letter-spacing: .12em;
+}
+.resqai-dialog__header h2 { margin: 0; font-size: 24px; line-height: 1.2; }
+.resqai-subtitle { margin: 6px 0 0; color: #4b5563; font-size: 13px; }
+.resqai-close {
+  flex: 0 0 auto; width: 38px; height: 38px; border: 0;
+  border-radius: 10px; background: #f3f4f6; color: #111827;
+  font-size: 28px; line-height: 1; cursor: pointer;
+}
+.resqai-iframe {
+  display: block; flex: 1 1 auto; width: 100%; min-height: 0;
+  border: 1px solid #e5e7eb; border-radius: 12px; background: #f9fafb;
+}
+.resqai-state {
+  flex: 1; display: grid; align-content: center; justify-items: start;
+  gap: 8px; padding: 20px; border-radius: 12px; background: #f9fafb;
+}
+.resqai-state p { margin: 0; color: #4b5563; line-height: 1.5; }
+.resqai-state button { padding: 9px 14px; border: 0; border-radius: 9px; cursor: pointer; }
+.resqai-disclaimer {
+  margin: 0; color: #6b7280; font-size: 11px; line-height: 1.45;
+}
+@media (max-width: 480px) {
+  .resqai-backdrop { padding: 0; }
+  .resqai-dialog { width: 100%; height: 100dvh; border-radius: 0; padding: 14px; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .resqai-trigger__pulse { animation: resqai-pulse 1.8s ease-out infinite; }
+  @keyframes resqai-pulse {
+    0%, 100% { box-shadow: 0 0 0 4px rgb(255 255 255 / 18%); }
+    50% { box-shadow: 0 0 0 8px rgb(255 255 255 / 0%); }
+  }
+}

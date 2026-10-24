@@ -1,0 +1,15 @@
+{
+  "name": "resqai-agent-config",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Optional Express helper for ResQAI hosted voice-agent configuration",
+  "main": "server.example.js",
+  "scripts": {
+    "start": "node server.example.js",
+    "dev": "node server.example.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2"
+  }
+}
