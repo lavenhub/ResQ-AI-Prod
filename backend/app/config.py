@@ -78,12 +78,6 @@ class Settings:
     gemini_live_model: str = field(default_factory=lambda: _get("GEMINI_LIVE_MODEL"))
     gemini_voice: str = field(default_factory=lambda: _get("GEMINI_VOICE", "Puck"))
 
-    # ── Hosted voice agent (Tough Tongue AI) ──────────────────────────────
-    # Optional. When set, /api/resqai/config serves this embed URL to the
-    # frontend widget at runtime. This is configuration passthrough, NOT a
-    # token-minting endpoint — do not treat it as a security boundary.
-    resqai_agent_url: str = field(default_factory=lambda: _get("RESQAI_AGENT_URL"))
-
     # ── Session guardrails (cost / abuse control) ─────────────────────────
     max_session_seconds: int = field(
         default_factory=lambda: _get_int("MAX_SESSION_SECONDS", 300)

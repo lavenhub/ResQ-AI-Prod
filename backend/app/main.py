@@ -18,7 +18,7 @@ from loguru import logger
 from . import __version__
 from .config import get_settings
 from .db import init_db
-from .routes import auth, contacts, email_webhook, emergency, incidents, resqai, rtc, system
+from .routes import auth, contacts, email_webhook, emergency, incidents, rtc, system
 from .services.email import get_provider
 from .services.notifier import NotificationWorker
 from .voice.session import SessionManager
@@ -102,7 +102,6 @@ def create_app() -> FastAPI:
     app.include_router(emergency.router)
     app.include_router(email_webhook.router)
     app.include_router(rtc.router)
-    app.include_router(resqai.router)
     return app
 
 

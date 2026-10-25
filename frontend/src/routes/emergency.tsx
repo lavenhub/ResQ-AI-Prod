@@ -15,7 +15,6 @@ import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { AuthGuard } from "@/components/AuthGuard";
 import { BottomNav } from "@/components/BottomNav";
-import ResQAIWidget from "@/components/ResQAIWidget";
 import SosAlertPanel from "@/components/SosAlertPanel";
 import { useVoiceAgent } from "@/hooks/useVoiceAgent";
 import { useBottomBarClasses } from "@/hooks/useBottomBarPos";
@@ -505,22 +504,6 @@ function EmergencyPage() {
               </button>
             </div>
           )}
-        </div>
-
-        {/* ── Hosted AI assistant (Tough Tongue AI) — browser-only, no backend needed ── */}
-        <div className="border-2 border-black bg-white p-4">
-          <div className="mb-1 text-[10px] font-bold uppercase tracking-wide text-[#C62828]">
-            Hosted Voice Assistant
-          </div>
-          <p className="mb-3 text-xs text-black/70">
-            Prefer a browser-only assistant? Talk to the hosted ResQ AI agent — it runs entirely in
-            your browser and works even if the live dispatcher backend is offline.
-          </p>
-          <ResQAIWidget
-            onOpen={() => {
-              if (inCall) agent.terminateSession();
-            }}
-          />
         </div>
 
         {/* ── Live Transcript ── */}

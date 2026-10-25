@@ -99,7 +99,21 @@ def build_voice_task(
     )
     VoiceTools(tool_ctx).register(llm)
 
-    context = LLMContext()
+    # Seed ONE kickoff user turn so the realtime model has something to respond to
+    # the instant the session is ready — this is what makes the dispatcher SPEAK
+    # FIRST. With an empty context, Gemini Live just waits silently for the caller
+    # to talk (which reads as "the call is dead"). The actual opening wording comes
+    # from the system instruction (prompts.py "OPENING THE CALL"); this turn is only
+    # the trigger and is never shown to the caller.
+    context = LLMContext(
+        messages=[
+            {
+                "role": "user",
+                "content": "The emergency call just connected. Open the call now with your "
+                "opening line, then wait for me to respond.",
+            }
+        ]
+    )
     context_aggregator = LLMContextAggregatorPair(context)
 
     # RTVI carries speaking-state + transcription messages to the frontend over
