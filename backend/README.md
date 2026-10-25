@@ -5,8 +5,11 @@ dispatcher (Pipecat + Google Gemini Multimodal Live over WebRTC) plus the
 minimum API the existing frontend needs — demo auth and a validated, persisted
 incident model with the tools the agent calls.
 
-> This phase delivers the **voice agent + its supporting API**. It does **not**
-> dispatch real emergency services or notify contacts (see *Honesty & scope*).
+> This delivers the **voice agent + its supporting API** and a production-oriented
+> **emergency email notification** pipeline (verified contacts, a durable outbox,
+> a real transactional provider, and signed delivery webhooks). It does **not**
+> dispatch real emergency services, and it never claims an email was delivered or
+> read without provider confirmation (see *Honesty & scope*).
 
 ---
 
@@ -73,6 +76,11 @@ cd backend
 .venv/Scripts/python -m uvicorn app.main:app --reload --port 8001
 ```
 
+For a **fresh production database**, create the schema with Alembic first
+(`alembic upgrade head`); migrating an **existing legacy SMS-era** DB is
+`python -m scripts.migrate_legacy_sms_db`. In local dev the app also create-alls
+the current schema on startup, so neither is required just to run locally.
+
 Then start the frontend (`cd frontend && bun install && bun dev`). The frontend
 already proxies `/api` and `/health` to `http://localhost:8001`, so no frontend
 config is needed for local dev.
@@ -83,7 +91,13 @@ config is needed for local dev.
 cd backend
 .venv/Scripts/python -m pytest          # full suite — no network / no API key needed
 .venv/Scripts/python scripts/check_pipeline.py   # construct the voice pipeline (dummy key)
+.venv/Scripts/python -m scripts.e2e_email_verify # real-socket e2e of the email pipeline (mock sink)
 ```
+
+The e2e exercises the **real** Resend provider code against a local HTTP sink +
+a genuine Svix-signed webhook (no live account needed): add contact → verify →
+SOS → `accepted_by_provider` → signed webhook → `delivered`, plus a forged webhook
+rejected.
 
 Tests never hit the network: retrieval HTTP is mocked (covering timeouts, rate
 limits, malformed responses, stale cache and provider failure), and the scenario
@@ -104,23 +118,22 @@ suite asserts the prompt keeps its safety invariants for every scenario family.
 | `AUTH_SECRET` | *(ephemeral)* | HMAC secret for signed session tokens. **Set in prod.** |
 | `AUTH_TOKEN_TTL_SECONDS` | `604800` | Session token lifetime. |
 | `DATABASE_URL` | `sqlite:///./resqai.db` | SQLite now; swap for Postgres later. |
-| `SMS_PROVIDER` | `mock` | `mock` (none) / `email` (free SMTP) / `msg91` (paid India SMS). |
-| `SMTP_HOST` / `SMTP_PORT` | *(empty)* / `587` | SMTP server (email channel), e.g. `smtp.gmail.com`. |
-| `SMTP_USERNAME` / `SMTP_PASSWORD` | *(empty)* | SMTP login (Gmail App Password / Brevo SMTP key). |
-| `SMTP_FROM` / `SMTP_FROM_NAME` | *(username)* / `ResQAI Alerts` | From address + display name. |
-| `SMTP_USE_TLS` / `SMTP_USE_SSL` | `true` / `false` | STARTTLS (587) vs implicit TLS (465). |
-| `MSG91_AUTH_KEY` | *(empty)* | MSG91 auth key (server secret). |
-| `MSG91_TEMPLATE_ID` | *(empty)* | DLT-approved Flow/template id (`flow_id`). |
-| `MSG91_SENDER_ID` | *(empty)* | Approved 6-char DLT header, e.g. `RESQAI`. |
-| `MSG91_DLT_ENTITY_ID` | *(empty)* | DLT Principal Entity id (reference). |
-| `SMS_PROVIDER_TIMEOUT_MS` | `8000` | Per-send HTTP timeout to the provider. |
-| `SMS_MAX_ATTEMPTS` | `4` | Send attempts per recipient before `FAILED`. |
-| `SMS_RETRY_BASE_DELAY_MS` | `2000` | Base for exponential backoff. |
-| `SMS_WORKER_POLL_MS` | `1000` | Outbox worker poll interval. |
-| `SMS_WORKER_AUTOSTART` | `true` | Start the background worker at boot. |
-| `SMS_CALLBACK_SECRET` | *(empty)* | Shared secret authenticating the DLR webhook. |
-| `SMS_CALLBACK_URL` | *(empty)* | Public callback URL (ops reference). |
-| `SMS_BRAND_NAME` | `RESQAI` | Brand in the SMS body (match DLT template). |
+| `EMAIL_PROVIDER` | `mock` | `mock` (dev/tests, sends nothing) / `resend` (real transactional email). |
+| `EMAIL_API_KEY` | *(empty)* | Provider API key (Resend `re_…`). Server-only secret. |
+| `EMAIL_FROM_ADDRESS` | *(empty)* | Verified sender address (domain must be verified). Required to send. |
+| `EMAIL_FROM_NAME` | `ResQAI Alerts` | Sender display name. |
+| `EMAIL_REPLY_TO` | *(empty)* | Optional Reply-To. |
+| `EMAIL_WEBHOOK_SECRET` | *(empty)* | Provider webhook signing secret (Resend/Svix `whsec_…`). Empty ⇒ webhooks rejected. |
+| `EMAIL_API_BASE` | `https://api.resend.com` | Provider API base; override only for staging/test sink. |
+| `EMAIL_PROVIDER_TIMEOUT_MS` | `10000` | Per-send HTTP timeout to the provider. |
+| `EMAIL_MAX_ATTEMPTS` | `4` | Send attempts per recipient before `FAILED`. |
+| `EMAIL_RETRY_BASE_DELAY_MS` | `2000` | Base for exponential backoff. |
+| `EMAIL_WORKER_POLL_MS` | `1000` | Outbox worker poll interval. |
+| `EMAIL_WORKER_AUTOSTART` | `true` | Start the background worker at boot. |
+| `EMAIL_WEBHOOK_TOLERANCE_SECONDS` | `300` | Reject webhooks with a stale signed timestamp (replay guard). |
+| `EMAIL_BRAND_NAME` | `ResQAI` | Brand in the email subject/body. |
+| `PUBLIC_APP_URL` | `http://localhost:8001` | Public base URL of THIS backend; builds verification links + webhook URL. |
+| `EMAIL_VERIFICATION_TTL_SECONDS` | `172800` | Contact email-verification token lifetime (48h). |
 | `MAX_CONTACTS_PER_USER` | `10` | Max emergency contacts per user. |
 | `SOS_RATE_LIMIT` / `SOS_RATE_WINDOW_SECONDS` | `5` / `300` | SOS rate limit. |
 | `CONTACTS_RATE_LIMIT` / `CONTACTS_RATE_WINDOW_SECONDS` | `60` / `60` | Contact-write rate limit. |
@@ -149,7 +162,7 @@ browser.
 |---|---|---|
 | GET | `/health` | Liveness. |
 | GET | `/api/status` | `{hasApiKey}` — true only when a real key is set. |
-| GET | `/api/sms/health` | SMS provider readiness (never sends). `isMock`/`realSendingConfigured`. |
+| GET | `/api/email/health` | Email provider readiness (never sends). `isMock`/`realSendingConfigured`. |
 | POST | `/api/auth/send-otp` | Demo; validates + normalizes phone (E.164). |
 | POST | `/api/auth/verify-otp` | Accepts `DEMO_OTP_CODE`; returns `{phone, token}` (signed session). |
 | POST | `/api/incidents` | Create. `201` new / `200` idempotent (same `session_id`). |
@@ -157,14 +170,16 @@ browser.
 | GET | `/api/incidents?limit=&status_filter=` | List. |
 | PATCH | `/api/incidents/{id}` | Partial update (never nulls prior fields). |
 | POST | `/api/rtc/offer` | WebRTC handshake → SDP answer. `503` if no key. Reads bearer token (optional). |
-| GET/POST | `/api/contacts` | **Auth.** List / create the caller's emergency contacts (E.164). |
+| GET/POST | `/api/contacts` | **Auth.** List / create the caller's emergency email contacts. |
 | PATCH/DELETE | `/api/contacts/{id}` | **Auth.** Update / delete own contact (ownership enforced). |
-| POST | `/api/emergency/sos` | **Auth.** Create incident + queue SMS to own active contacts. Idempotent, rate-limited. |
+| POST | `/api/contacts/{id}/send-verification` | **Auth.** (Re)send a single-use verification email to the contact. |
+| GET | `/api/contacts/verify?token=…` | **Public.** Single-use email-verification landing page (token is the credential). |
+| POST | `/api/emergency/sos` | **Auth.** Create incident + queue email to own verified contacts. Idempotent, rate-limited. |
 | GET | `/api/emergency/incidents/{id}` | **Auth.** Incident + per-recipient notification status + summary. |
 | GET | `/api/emergency/incidents` | **Auth.** List own incidents. |
-| POST | `/api/emergency/incidents/{id}/cancel` | **Auth.** False-alarm cancel; stops pending sends. |
+| POST | `/api/emergency/incidents/{id}/cancel` | **Auth.** False-alarm cancel; stops not-yet-sent jobs. |
 | POST | `/api/emergency/notifications/{id}/retry` | **Auth.** Re-queue a FAILED/UNKNOWN notification. |
-| POST | `/api/sms/callback?secret=…` | Provider DLR webhook. Shared-secret auth; idempotent; `401` if forged. |
+| POST | `/api/email/webhook` | Provider delivery-event webhook. Svix-signature auth over raw body; idempotent; `401` if forged. |
 
 Endpoints marked **Auth** require `Authorization: Bearer <token>` (the token from
 `verify-otp`). They operate only on the caller's own data.
@@ -187,132 +202,143 @@ actual audio** (see below) — it has not been machine-verified here.
 
 ---
 
-## Emergency SMS alerting (contacts)
+## Emergency EMAIL alerting (contacts)
 
 When a signed-in user taps **SOS** (or asks the voice agent to alert contacts),
-the backend — never the browser — sends SMS to the user's saved emergency
-contacts. Flow:
+the backend — never the browser — emails the user's saved, **verified** emergency
+contacts via a transactional email provider. Flow:
 
 ```
 authenticated SOS
   → validate + rate-limit + idempotency
-  → resolve recipients from the user's OWN active contacts (never client-supplied numbers)
+  → resolve recipients from the user's OWN verified, active contacts (never client-supplied addresses)
   → create Incident + one NotificationJob per recipient, in ONE DB transaction  (durable outbox)
   → background worker claims due jobs, sends via the provider, records the outcome
-      PROVIDER_ACCEPTED  (carrier took it — NOT delivered)
-  → provider DLR webhook  → DELIVERED | FAILED
+      ACCEPTED_BY_PROVIDER  (provider took it — NOT delivered)
+  → provider webhook (Svix-signed)  → DELIVERED | DEFERRED | BOUNCED | FAILED
   → frontend polls incident status and shows each recipient's true state
 ```
 
-Key properties: per-recipient independence (one bad number never blocks others);
+Key properties: per-recipient independence (one bad address never blocks others);
 exponential backoff with a max-attempts cap, then dead-letter to `FAILED`; a send
-**timeout → `UNKNOWN`, never a blind resend**; idempotent SOS (same
-`idempotency_key` ⇒ same incident, no second wave); provider acceptance recorded
-**distinctly** from delivery.
+**timeout → `UNKNOWN`, never a blind resend**; a stable per-job **Idempotency-Key**
+sent to the provider so even a retried send can't create a duplicate email;
+idempotent SOS (same `idempotency_key` ⇒ same incident, no second wave); provider
+acceptance recorded **distinctly** from delivery. A hard bounce / spam complaint
+**suppresses** the contact so we stop emailing an address that rejects us.
 
-### Channels / providers
+### Statuses (truthful, never conflated)
 
-`SMS_PROVIDER` picks the channel, all behind one interface
-(`app/services/sms/base.py`) so the outbox/worker/status/callback code is shared:
+`queued → processing → accepted_by_provider → delivered` on the happy path, plus
+`deferred` (temporary provider delay), `bounced` (mailbox rejected — terminal),
+`failed` (permanent/exhausted — terminal), `unknown` (indeterminate, e.g. timeout),
+and `cancelled` (false-alarm before send). We never report "opened" or "read" —
+delivery is as far as truthful tracking goes, and there are **no tracking pixels**.
 
-| `SMS_PROVIDER` | Channel | Cost | DLT? | Use |
-|---|---|---|---|---|
-| `mock` (default) | — | free | no | dev/tests; sends nothing |
-| **`email`** | **Email via SMTP** | **free** | **no** | **recommended free real path** |
-| `msg91` | SMS (India) | paid + DLT | yes | real SMS once registered |
+### Provider: Resend
 
-### Email channel (free, no DLT) — recommended
+All provider calls sit behind one interface (`app/services/email/base.py`), so a
+second provider (e.g. SendGrid) can be added as another `EmailProvider` without
+touching the pipeline. The implemented real provider is **Resend**
+(`app/services/email/resend_provider.py`), chosen over SendGrid for its simple REST
+API, clean Svix-signed webhooks, and a free tier (3,000/mo, 100/day) suitable for
+testing. The integration uses the verified API: `POST https://api.resend.com/emails`,
+`Authorization: Bearer re_…`, body `{from,to,subject,html,text,…}`, success
+`{"id":"<uuid>"}`; delivery events arrive as Svix-signed webhooks.
 
-`SMS_PROVIDER=email` sends the alert by **email over SMTP** — free, reaches any
-contact, and needs no telecom registration. Verified end-to-end over a real
-socket (provider → worker → `provider_accepted` → delivery webhook → `delivered`).
+`EMAIL_PROVIDER` selects the implementation:
 
-**Free setup — Gmail (fastest):**
-1. On a Google account, enable **2-Step Verification**, then create an **App
-   Password** (Google Account → Security → App passwords).
-2. In `.env`: `SMS_PROVIDER=email`, `SMTP_HOST=smtp.gmail.com`, `SMTP_PORT=587`,
-   `SMTP_USERNAME=you@gmail.com`, `SMTP_PASSWORD=<app password>`,
-   `SMTP_FROM=you@gmail.com`, `SMS_CALLBACK_SECRET=<random>`.
-3. `GET /api/sms/health` → `{provider:"email", realSendingConfigured:true}`.
-4. Add a contact **with an email**, trigger SOS → the contact gets the alert.
-   (Gmail gives no delivery webhook, so status stops at `provider_accepted`, which
-   is the honest truth — "handed to the mail server".)
+| `EMAIL_PROVIDER` | Cost | Use |
+|---|---|---|
+| `mock` (default) | free | dev/tests; sends nothing. Returns the verification link in the API response so the loop can be demoed. |
+| `resend` | free tier | real transactional email |
 
-**Free setup — Brevo (adds real `delivered` receipts):** use
-`SMTP_HOST=smtp-relay.brevo.com` + a Brevo SMTP key, and point Brevo's **event
-webhook** at `{SMS_CALLBACK_URL}?secret={SMS_CALLBACK_SECRET}`. We set our own
-`Message-ID` on each email and match Brevo's `message-id` event back to the job,
-so `delivered`/`hard_bounce` become real per-recipient states. Free tier: 300/day.
+### Email verification (consent)
 
-Contacts need an email for this channel; a contact without one gets a visible
-`FAILED` job ("no email address on file") rather than being silently skipped.
+A contact is eligible for alerts only once it is **active + verified + not suppressed**.
+Saving a contact never implies consent. `POST /api/contacts/{id}/send-verification`
+mints a cryptographically random, single-use, time-limited token (only its SHA-256
+hash is stored) and emails a `{PUBLIC_APP_URL}/api/contacts/verify?token=…` link.
+The recipient clicking it marks the contact verified; the token is then consumed.
+With the `mock` provider the link is returned as `dev_verification_url` so the demo
+works without a mailbox — with a real provider that field is always `null`.
 
-### Provider: MSG91 (India SMS)
+### Production setup (Resend)
 
-For real **SMS** set `SMS_PROVIDER=msg91` + MSG91 credentials. The integration
-uses the **verified v5 Flow API**: `POST https://api.msg91.com/api/v5/flow/`,
-header `authkey`, body `{flow_id, sender, recipients:[{mobiles, …vars}]}`; success
-`{"type":"success","message":"<requestId>"}`. See `app/services/sms/msg91.py`.
-**In India this requires paid DLT registration** (there is no free compliant SMS
-route to arbitrary numbers — it's TRAI law, not a MSG91 limit).
+1. Create an account at <https://resend.com> (free tier is enough to test).
+2. **Add + verify a sending domain** (Domains → Add Domain). Resend shows the
+   exact DNS records to create at your DNS host — **use the values Resend displays**
+   (do not copy any from here). Typically:
+   - an **SPF** `TXT` record (e.g. host `send`, value `v=spf1 include:amazonses.com ~all`),
+   - one or more **DKIM** `TXT`/`CNAME` records (Resend provides selector + value),
+   - an optional **MX** record for the sending subdomain, and
+   - a recommended **DMARC** `TXT` at `_dmarc.yourdomain` (e.g.
+     `v=DMARC1; p=none; rua=mailto:dmarc@yourdomain`).
+   Prefer a dedicated subdomain (e.g. `alerts.yourdomain.com`) for reputation.
+   Wait for the dashboard to show the domain **Verified**.
+3. Create an **API key** (`re_…`) → `EMAIL_API_KEY`. Set `EMAIL_FROM_ADDRESS` to an
+   address on the verified domain and `EMAIL_FROM_NAME`.
+4. Add a **webhook** (Webhooks → Add) pointing at `{PUBLIC_APP_URL}/api/email/webhook`,
+   subscribed to `email.sent/delivered/delivery_delayed/bounced/complained/failed`.
+   Copy its signing secret (`whsec_…`) → `EMAIL_WEBHOOK_SECRET`. We verify the Svix
+   signature over the raw body with a timestamp tolerance (replay guard).
+5. Set `EMAIL_PROVIDER=resend` and a real `PUBLIC_APP_URL` (https, publicly reachable).
+6. Verify readiness (sends nothing): `GET /api/email/health` → `realSendingConfigured:true`.
 
-**One-time MSG91 + DLT setup (India telecom law — not optional, not exempt for
-emergencies):**
-1. Create a MSG91 account; get your **auth key** (`MSG91_AUTH_KEY`).
-2. Complete **DLT registration**: register your Principal Entity, then a **Header/
-   Sender ID** (6 chars, e.g. `RESQAI`) and a **Content Template** matching the SMS
-   body (see `app/services/sms/templating.py`). Guide:
-   https://msg91.com/help/dlt-registration-in-india/step-by-step-guide-to-implement-dlt-in-sms/
-3. In MSG91, create a **Flow** from the approved template; its id is
-   `MSG91_TEMPLATE_ID` (the v5 `flow_id`). Set `MSG91_SENDER_ID` to the approved header.
-4. Configure the **delivery webhook** to `POST {SMS_CALLBACK_URL}?secret={SMS_CALLBACK_SECRET}`.
-   MSG91 SMS DLR is not HMAC-signed, so the shared `secret` is how we authenticate it.
-5. Verify readiness (no message sent): `GET /api/sms/health` → `realSendingConfigured:true`.
+> **Status in this repo:** `EMAIL_PROVIDER` defaults to `mock` (sends nothing) so no
+> credentials are committed, and no real email has been sent from this repo. The
+> **real Resend path is fully implemented and verified end-to-end over real sockets**
+> (`scripts/e2e_email_verify.py`: send via the real provider code → `accepted_by_provider`
+> → genuine Svix-signed webhook → `delivered`, plus a forged webhook rejected). To go
+> live you only add your own Resend API key + verified domain + webhook secret — nothing
+> in the code is missing. **Remaining production blockers are external:** a Resend
+> account, a verified sending domain (DNS you control), and a public HTTPS URL for the
+> webhook.
 
-> **Status in this repo:** `SMS_PROVIDER` defaults to `mock` (sends nothing) so
-> no credentials are committed. The **free email channel is fully implemented and
-> verified end-to-end over a real SMTP socket** — to turn on real delivery you only
-> add your own free SMTP creds (Gmail App Password or Brevo) per the steps above;
-> nothing in the code is missing. Real **SMS** via MSG91 remains **not configured**
-> (needs a paid MSG91 account + DLT approval). No real message has been sent from
-> this repo by default.
+### Controlled real-provider staging test (operator-gated)
 
-### Controlled real-SMS staging test (operator-gated)
-
-Do this only in staging, only to a number you are authorized to message, only
+Do this only in staging, only to an address **you** are authorized to use, only
 after explicit approval — never against real contacts by default:
-1. In a **staging** env set `SMS_PROVIDER=msg91` + real credentials + a reachable
-   `SMS_CALLBACK_URL`/`SMS_CALLBACK_SECRET`.
-2. Create ONE contact that is your own authorized test handset.
-3. `GET /api/sms/health` must show `realSendingConfigured:true` first.
-4. Trigger one SOS. Confirm: `provider_accepted` on your handset, the SMS arrives,
-   and the DLR callback flips it to `delivered`.
+1. In a **staging** env set `EMAIL_PROVIDER=resend` + real `EMAIL_API_KEY`,
+   verified `EMAIL_FROM_ADDRESS`, `EMAIL_WEBHOOK_SECRET`, and a reachable `PUBLIC_APP_URL`.
+2. `GET /api/email/health` must show `realSendingConfigured:true` first.
+3. Add ONE contact that is your own authorized test inbox; verify it via the link.
+4. Trigger one SOS. Confirm: `accepted_by_provider`, the email arrives, and the
+   provider webhook flips it to `delivered`.
 
 ### Operations
 
-- **Migrations:** schema is created by SQLModel (`init_db` at startup). The SMS
-  feature adds tables `emergencycontact` and `notificationjob` and columns on
-  `incident` (`trigger_source, note, idempotency_key, cancelled_at`). On SQLite,
-  delete `resqai.db` to recreate in dev; for Postgres use Alembic (add autogenerate
-  revisions) and roll back by reverting the revision.
-- **Worker:** an in-process asyncio worker (`SMS_WORKER_AUTOSTART=true`) drains the
+- **Database migrations (Alembic):** fresh/production databases run
+  `alembic upgrade head` (creates `incident`, `emergencycontact`, `notificationjob`,
+  `notificationevent`). `alembic check` confirms the migration matches the models.
+  For a **legacy SQLite DB** from the old SMS build, run
+  `python -m scripts.migrate_legacy_sms_db` — it backs the file up to
+  `<db>.pre-email-backup`, preserves all incidents, rebuilds contact/job tables to
+  the email schema, and stamps Alembic. (In dev, `init_db` also create-alls the
+  current schema on startup for convenience.)
+- **Worker:** an in-process asyncio worker (`EMAIL_WORKER_AUTOSTART=true`) drains the
   outbox. For serverless/multi-instance, disable autostart and drive
   `app/services/notifier.py::drain_pending`-style processing from a scheduler/queue;
   the `notificationjob` table is the durable outbox and the worker lease
   (`locked_at`) + stale-lease reclaim make that safe.
-- **Health/readiness:** `/health` (liveness), `/api/sms/health` (provider config,
-  never sends), `/api/status` (voice).
-- **Monitor:** provider rejections (`notificationjob.last_error`, `status=FAILED`),
-  outbox backlog (`status IN (pending,processing)` age), repeated retries
-  (`attempts` climbing), and `UNKNOWN` outcomes needing reconciliation.
-- **Data retention:** incidents/notifications persist for audit. Define a retention
-  window and purge old rows per your policy; location is stored only on the
-  incident, masked in logs, and never silently IP-derived.
-- **Troubleshooting:** `401` on callback ⇒ wrong/missing `secret`. Sends all
-  `FAILED` with "not configured" ⇒ missing MSG91 creds (check `/api/sms/health`).
-  `PERMANENT` with a template message ⇒ DLT template/sender mismatch — align the
-  body in `templating.py` with the approved template. `429` ⇒ provider rate limit
-  (honored via backoff/Retry-After).
+- **Health/readiness:** `/health` (liveness), `/api/email/health` (provider config,
+  never sends), `/api/status` (voice). None of these send email.
+- **Monitor:** provider rejections (`notificationjob.last_error`, `status IN (failed,bounced)`),
+  outbox backlog (`status IN (queued,processing)` age), repeated retries
+  (`attempts` climbing), `unknown` outcomes needing reconciliation, and the
+  `notificationevent` audit log for delivery history.
+- **Data retention:** incidents/notifications/events persist for audit. Define a
+  retention window and purge old rows per your policy; location is stored only on the
+  incident, masked in logs, and never silently IP-derived. We never store medical
+  transcripts in alerts.
+- **Fallback:** if the provider is unavailable, sends stay `queued`/`unknown` and the
+  UI keeps an always-visible "Real emergency? Call 112/108 now" banner — email
+  notification never implies help has been dispatched.
+- **Troubleshooting:** `401` on the webhook ⇒ bad/missing Svix signature or stale
+  timestamp. Sends all `FAILED` with "not configured" ⇒ missing `EMAIL_API_KEY`/
+  `EMAIL_FROM_ADDRESS` (check `/api/email/health`). `PERMANENT` ⇒ unverified domain,
+  invalid recipient, or bad key (Resend's message is kept on `last_error`). `429` ⇒
+  provider rate limit (honored via backoff/Retry-After).
 
 ---
 
@@ -348,13 +374,13 @@ status, a response time, or an advisory.
 
 ## Honesty & scope (read this)
 
-- The agent **records** incidents and can **queue SMS alerts to the caller's own
-  saved contacts** (with consent) via `trigger_sos_alert`. It does **not** dispatch
-  ambulances/police/fire or call anyone, and it is instructed to say alerts are
-  "queued"/"being sent" — **never "delivered"** unless a DLR callback confirms it.
-- "Provider accepted" ≠ "delivered" ≠ "read". The UI and the agent keep these
+- The agent **records** incidents and can **queue email alerts to the caller's own
+  saved, verified contacts** (with consent) via `trigger_sos_alert`. It does **not**
+  dispatch ambulances/police/fire or call anyone, and it is instructed to say alerts
+  are "queued"/"being sent" — **never "delivered"** unless a provider webhook confirms it.
+- "Accepted by provider" ≠ "delivered" ≠ "read". The UI and the agent keep these
   distinct; the SOS API returning `200` only means the incident was recorded and
-  jobs queued.
+  jobs queued. We never claim an email was opened or read.
 - Retrieval is read-only lookups (see the table above); the agent never claims a
   live fact it didn't actually retrieve.
 - No key / provider down ⇒ `/api/status` reports `hasApiKey:false` and
@@ -365,7 +391,7 @@ status, a response time, or an advisory.
   are owned per user and ownership-checked on every read/write.
 - The LLM can only call the eight validated tools; it has no direct DB or network
   access, cannot set the caller's location (device-provided), and **cannot supply
-  phone numbers** — SMS recipients are resolved server-side from the user's contacts.
+  recipients** — email recipients are resolved server-side from the user's verified contacts.
 
 ## Known limitations
 
@@ -376,15 +402,17 @@ status, a response time, or an advisory.
   idempotent on `idempotency_key`.
 - SQLite single-file DB; fine for the demo, swap `DATABASE_URL` for Postgres to
   scale.
-- **Real SMS sending is NOT configured** (no MSG91 account/DLT/template/sender).
-  Everything works on the `mock` provider and is verified end-to-end; no real SMS
-  has been sent or delivery-confirmed. See the SMS section for the exact blocker.
+- **Real email sending is NOT configured by default** (`EMAIL_PROVIDER=mock`). The
+  real Resend path is fully implemented and verified end-to-end over real sockets
+  (`scripts/e2e_email_verify.py`); turning it on needs only your own Resend API key,
+  a verified sending domain, and a public webhook URL. No real email has been sent
+  from this repo. See the email section for the exact external blockers.
 - Rate limiting and idempotency are **in-process** (single instance). For multi-
   instance deployments back them with Redis / the DB.
-- Contacts are stored but **not verified** — saving a number does not prove the
-  owner consented or controls it (a confirmation flow is future work).
-- OTP is demo; a real SMS-OTP (reusing this same provider layer) is the obvious
-  next step to make login production-grade.
+- A contact must **confirm its email** (single-use link) before it can be alerted —
+  saving an address never implies consent, and a hard bounce/complaint suppresses it.
+- OTP login is demo; a real OTP delivery channel is the obvious next step to make
+  login production-grade (independent of emergency email).
 
 ## Cost
 

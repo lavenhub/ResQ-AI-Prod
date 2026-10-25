@@ -11,6 +11,8 @@ uvicorn[standard]==0.54.0
 # Data / persistence
 sqlmodel==0.0.48
 python-dotenv==1.2.4
+# Database migrations (schema versioning for production deploys).
+alembic==1.16.5
 
 # Phone-number normalization/validation to E.164 (emergency contacts + auth).
 phonenumbers==9.0.19

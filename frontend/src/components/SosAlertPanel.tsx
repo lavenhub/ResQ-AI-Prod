@@ -1,16 +1,26 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, Clock, Phone, RefreshCw, Send, XCircle } from "lucide-react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Clock,
+  Mail,
+  Phone,
+  RefreshCw,
+  Send,
+  XCircle,
+} from "lucide-react";
 import {
   cancelIncident,
+  emailHealth,
   getIncidentStatus,
   retryNotification,
-  smsHealth,
   STATUS_HINT,
   STATUS_LABEL,
+  TERMINAL_STATUSES,
   triggerSos,
+  type EmailHealth,
   type NotificationRead,
   type NotificationStatus,
-  type SmsHealth,
   type SosResponse,
 } from "@/lib/emergencyApi";
 
@@ -18,21 +28,23 @@ function uid() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
-const TERMINAL: NotificationStatus[] = ["delivered", "failed", "unknown"];
-
 const STATUS_STYLE: Record<NotificationStatus, string> = {
+  queued: "bg-black/5 text-black border-black",
   pending: "bg-black/5 text-black border-black",
   processing: "bg-amber-50 text-amber-700 border-amber-500",
-  provider_accepted: "bg-blue-50 text-blue-700 border-blue-500",
+  accepted_by_provider: "bg-blue-50 text-blue-700 border-blue-500",
   delivered: "bg-green-50 text-green-700 border-green-600",
+  deferred: "bg-amber-50 text-amber-800 border-amber-600",
+  bounced: "bg-[#C62828]/10 text-[#C62828] border-[#C62828]",
   failed: "bg-[#C62828]/10 text-[#C62828] border-[#C62828]",
   unknown: "bg-amber-50 text-amber-800 border-amber-600",
+  cancelled: "bg-black/5 text-black/50 border-black/40",
 };
 
 function StatusIcon({ s }: { s: NotificationStatus }) {
   if (s === "delivered") return <CheckCircle2 size={16} />;
-  if (s === "failed") return <XCircle size={16} />;
-  if (s === "unknown") return <AlertTriangle size={16} />;
+  if (s === "failed" || s === "bounced") return <XCircle size={16} />;
+  if (s === "unknown" || s === "deferred") return <AlertTriangle size={16} />;
   return <Clock size={16} />;
 }
 
@@ -46,19 +58,27 @@ interface Props {
 
 type Phase = "idle" | "confirming" | "submitting" | "tracking" | "error";
 
-export default function SosAlertPanel({ coords, address, accuracy, incidentType, victimName }: Props) {
+export default function SosAlertPanel({
+  coords,
+  address,
+  accuracy,
+  incidentType,
+  victimName,
+}: Props) {
   const [phase, setPhase] = useState<Phase>("idle");
   const [incidentId, setIncidentId] = useState<string | null>(null);
   const [notifications, setNotifications] = useState<NotificationRead[]>([]);
   const [overall, setOverall] = useState<string>("");
   const [locationIncluded, setLocationIncluded] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [health, setHealth] = useState<SmsHealth | null>(null);
+  const [health, setHealth] = useState<EmailHealth | null>(null);
   const idempotencyKey = useRef<string>(uid());
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
-    smsHealth().then(setHealth).catch(() => setHealth(null));
+    emailHealth()
+      .then(setHealth)
+      .catch(() => setHealth(null));
   }, []);
 
   const applyResponse = useCallback((r: SosResponse) => {
@@ -83,7 +103,10 @@ export default function SosAlertPanel({ coords, address, accuracy, incidentType,
         const r = await getIncidentStatus(incidentId);
         setNotifications(r.notifications);
         setOverall(r.notification_summary.overall);
-        if (r.notifications.length > 0 && r.notifications.every((n) => TERMINAL.includes(n.status))) {
+        if (
+          r.notifications.length > 0 &&
+          r.notifications.every((n) => TERMINAL_STATUSES.includes(n.status))
+        ) {
           stopPolling();
         }
       } catch {
@@ -118,19 +141,22 @@ export default function SosAlertPanel({ coords, address, accuracy, incidentType,
     }
   }, [incidentType, victimName, coords, accuracy, address, applyResponse]);
 
-  const doRetry = useCallback(async (id: string) => {
-    try {
-      await retryNotification(id);
-      setPhase("tracking"); // ensure polling resumes
-      if (incidentId) {
-        const r = await getIncidentStatus(incidentId);
-        setNotifications(r.notifications);
-        setOverall(r.notification_summary.overall);
+  const doRetry = useCallback(
+    async (id: string) => {
+      try {
+        await retryNotification(id);
+        setPhase("tracking"); // ensure polling resumes
+        if (incidentId) {
+          const r = await getIncidentStatus(incidentId);
+          setNotifications(r.notifications);
+          setOverall(r.notification_summary.overall);
+        }
+      } catch {
+        /* surfaced on next poll */
       }
-    } catch {
-      /* surfaced on next poll */
-    }
-  }, [incidentId]);
+    },
+    [incidentId],
+  );
 
   const doCancel = useCallback(async () => {
     if (!incidentId) return;
@@ -158,16 +184,16 @@ export default function SosAlertPanel({ coords, address, accuracy, incidentType,
   return (
     <div className="border-2 border-black bg-white p-4">
       <div className="mb-1 flex items-center gap-2 text-[10px] font-bold uppercase tracking-wide text-[#C62828]">
-        <Send size={14} /> Alert Emergency Contacts
-        {health && <span className="text-black/50">· via {health.channel === "email" ? "Email" : "SMS"}</span>}
+        <Mail size={14} /> Alert Emergency Contacts
+        <span className="text-black/50">· via Email</span>
       </div>
 
       {/* Provider truthfulness banner */}
       {health && (health.isMock || !health.realSendingConfigured) && (
         <div className="mb-3 border-2 border-amber-500 bg-amber-50 px-3 py-2 text-[11px] font-semibold text-amber-800">
           {health.isMock
-            ? "Demo provider: alerts are recorded but NO real message is sent."
-            : `${health.channel === "email" ? "Email" : "SMS"} provider not fully configured — real sending is OFF.`}
+            ? "Demo provider: alerts are recorded but NO real email is sent."
+            : "Email provider not fully configured — real sending is OFF."}
         </div>
       )}
 
@@ -179,8 +205,8 @@ export default function SosAlertPanel({ coords, address, accuracy, incidentType,
       {phase === "idle" && (
         <>
           <p className="mb-3 text-xs text-black/70">
-            Alert your saved emergency contacts{health?.channel === "email" ? " by email" : ""} with your
-            location link and a short incident reference. Recipients are taken from your saved contacts.
+            Email your saved, verified emergency contacts with your location link and a short
+            incident reference. Recipients are taken from your saved contacts only.
           </p>
           <button
             onClick={() => setPhase("confirming")}
@@ -199,7 +225,7 @@ export default function SosAlertPanel({ coords, address, accuracy, incidentType,
       {phase === "confirming" && (
         <>
           <p className="mb-3 text-sm font-bold text-black">
-            Send an emergency SMS to your contacts now?
+            Send an emergency email to your contacts now?
           </p>
           <div className="flex gap-2">
             <button
@@ -219,7 +245,9 @@ export default function SosAlertPanel({ coords, address, accuracy, incidentType,
       )}
 
       {phase === "submitting" && (
-        <div className="py-4 text-center text-sm font-bold uppercase text-black/70">Recording incident…</div>
+        <div className="py-4 text-center text-sm font-bold uppercase text-black/70">
+          Recording incident…
+        </div>
       )}
 
       {phase === "error" && (
@@ -241,9 +269,15 @@ export default function SosAlertPanel({ coords, address, accuracy, incidentType,
           <div className="flex items-center justify-between border-2 border-black bg-black/5 px-3 py-2">
             <div className="text-[11px] font-bold uppercase text-black">
               Incident recorded
-              {incidentId && <span className="ml-1 font-mono text-black/50">#{incidentId.slice(0, 8).toUpperCase()}</span>}
+              {incidentId && (
+                <span className="ml-1 font-mono text-black/50">
+                  #{incidentId.slice(0, 8).toUpperCase()}
+                </span>
+              )}
             </div>
-            <span className="text-[10px] font-bold uppercase text-black/60">{overall.replace(/_/g, " ")}</span>
+            <span className="text-[10px] font-bold uppercase text-black/60">
+              {overall.replace(/_/g, " ")}
+            </span>
           </div>
 
           {!locationIncluded && (
@@ -258,13 +292,13 @@ export default function SosAlertPanel({ coords, address, accuracy, incidentType,
                 <div className="flex items-center justify-between">
                   <div className="min-w-0">
                     <div className="truncate text-sm font-bold text-black">
-                      {n.recipient_name || n.recipient_email || n.recipient_phone}
+                      {n.recipient_name || n.recipient_email}
                     </div>
-                    <div className="truncate text-[11px] text-black/50">
-                      {n.channel === "email" ? (n.recipient_email || "no email on file") : n.recipient_phone}
-                    </div>
+                    <div className="truncate text-[11px] text-black/50">{n.recipient_email}</div>
                   </div>
-                  <span className={`flex shrink-0 items-center gap-1 border-2 px-2 py-1 text-[10px] font-black uppercase ${STATUS_STYLE[n.status]}`}>
+                  <span
+                    className={`flex shrink-0 items-center gap-1 border-2 px-2 py-1 text-[10px] font-black uppercase ${STATUS_STYLE[n.status]}`}
+                  >
                     <StatusIcon s={n.status} /> {STATUS_LABEL[n.status]}
                   </span>
                 </div>
@@ -299,7 +333,7 @@ export default function SosAlertPanel({ coords, address, accuracy, incidentType,
             </button>
           </div>
           <p className="text-[10px] text-black/40">
-            "Cancel" stops pending messages; it cannot recall messages a carrier already accepted.
+            "Cancel" stops not-yet-sent emails; it cannot recall an email the provider already sent.
           </p>
         </div>
       )}

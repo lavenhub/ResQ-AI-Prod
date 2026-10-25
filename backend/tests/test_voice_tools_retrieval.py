@@ -149,21 +149,22 @@ def test_tool_set_is_exactly_the_expected_eight():
     }
 
 
-def test_agent_cannot_dispatch_vehicles_or_supply_phone_numbers():
-    # The agent CAN queue SMS to the caller's OWN saved contacts (trigger_sos_alert),
+def test_agent_cannot_dispatch_vehicles_or_supply_recipients():
+    # The agent CAN queue EMAIL to the caller's OWN saved contacts (trigger_sos_alert),
     # but it must NOT be able to dispatch vehicles, phone emergency services, or
-    # supply arbitrary phone numbers to message.
+    # supply arbitrary recipients to message.
     schema = {fs.name: fs for fs in build_tools_schema().standard_tools}
     # No vehicle-dispatch / call-service tool exists.
     forbidden = ("dispatch", "ambulance", "call_", "share_location", "911", "108")
     for n in schema:
         assert not any(f in n for f in forbidden), f"unexpected action tool: {n}"
-    # The one alerting tool takes NO phone-number argument — recipients are
-    # resolved server-side from the authenticated user's saved contacts.
+    # The one alerting tool takes NO recipient argument — recipients are
+    # resolved server-side from the authenticated user's saved, verified contacts.
     sos = schema["trigger_sos_alert"]
     props = set(getattr(sos, "properties", {}) or {})
-    assert not (props & {"phone", "mobiles", "number", "to", "recipients", "contacts"}), (
-        "trigger_sos_alert must not accept caller-supplied phone numbers"
+    assert not (props & {"phone", "mobiles", "number", "to", "recipients",
+                         "contacts", "email", "emails", "addresses"}), (
+        "trigger_sos_alert must not accept caller-supplied recipients"
     )
 
 

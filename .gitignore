@@ -25,6 +25,7 @@ build/
 *.db
 *.db-journal
 *.sms-backup
+*.pre-email-backup
 
 # Editor / OS
 .DS_Store

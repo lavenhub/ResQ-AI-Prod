@@ -21,13 +21,18 @@ os.environ["DEMO_OTP_CODE"] = "123456"
 os.environ["GEMINI_API_KEY"] = ""
 # Stable signing secret so issued tokens verify deterministically across the run.
 os.environ["AUTH_SECRET"] = "test-auth-secret-not-for-production"
-# Mock SMS provider; drive the worker manually (no background polling in tests).
-os.environ["SMS_PROVIDER"] = "mock"
-os.environ["SMS_WORKER_AUTOSTART"] = "false"
-os.environ["SMS_CALLBACK_SECRET"] = "test-callback-secret"
+# Mock email provider; drive the worker manually (no background polling in tests).
+os.environ["EMAIL_PROVIDER"] = "mock"
+os.environ["EMAIL_WORKER_AUTOSTART"] = "false"
+# A configured webhook secret so the mock requires the x-webhook-secret header
+# (lets us assert that forged/unsigned webhooks are rejected).
+os.environ["EMAIL_WEBHOOK_SECRET"] = "test-webhook-secret"
+os.environ["EMAIL_FROM_ADDRESS"] = "alerts@resqai.test"
+os.environ["EMAIL_FROM_NAME"] = "ResQAI Alerts"
+os.environ["PUBLIC_APP_URL"] = "http://testserver"
 # Fast, deterministic backoff for retry tests.
-os.environ["SMS_RETRY_BASE_DELAY_MS"] = "10"
-os.environ["SMS_MAX_ATTEMPTS"] = "3"
+os.environ["EMAIL_RETRY_BASE_DELAY_MS"] = "10"
+os.environ["EMAIL_MAX_ATTEMPTS"] = "3"
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

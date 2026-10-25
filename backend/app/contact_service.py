@@ -1,20 +1,24 @@
-"""Emergency-contact business logic — the one validated path for contact data.
+"""Emergency-email-contact business logic — the one validated path for contact data.
 
 Every function is scoped to an authenticated ``user_ref`` (the owner's E.164
-phone from the session). A user can only ever read/write their own contacts, and
-phone numbers are normalized to E.164 + de-duplicated here so the SMS pipeline
-always receives canonical, valid numbers.
+phone from the session). A user can only ever read/write their own contacts;
+email addresses are normalized + de-duplicated here so the notification pipeline
+always receives canonical, valid, consented addresses.
+
+A contact becomes eligible to receive SOS alerts only when it is active AND
+verified AND not suppressed — see ``eligible_contacts``.
 """
 
 from __future__ import annotations
 
 import re
+from datetime import timedelta
 
 from sqlmodel import Session, select
 
 from .config import get_settings
-from .models import EmergencyContact, ContactCreate, ContactUpdate, utcnow
-from .services.phone import PhoneValidationError, normalize_phone
+from .models import ContactCreate, ContactUpdate, EmergencyContact, utcnow
+from .services import verification
 
 
 class ContactError(ValueError):
@@ -25,17 +29,16 @@ class ContactError(ValueError):
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
-def _normalize_email(raw: str | None) -> str | None:
-    if raw is None:
-        return None
-    text = raw.strip()
-    if not text:
-        return None
-    if not _EMAIL_RE.match(text):
+def normalize_email(raw: str | None) -> str:
+    if raw is None or not str(raw).strip():
+        raise ContactError("Email address is required.")
+    text = str(raw).strip()
+    if len(text) > 254 or not _EMAIL_RE.match(text):
         raise ContactError("Enter a valid email address.")
     return text.lower()
 
 
+# ── Reads ──────────────────────────────────────────────────────────────────────
 def list_contacts(session: Session, user_ref: str) -> list[EmergencyContact]:
     stmt = (
         select(EmergencyContact)
@@ -45,9 +48,17 @@ def list_contacts(session: Session, user_ref: str) -> list[EmergencyContact]:
     return list(session.exec(stmt).all())
 
 
-def active_contacts(session: Session, user_ref: str) -> list[EmergencyContact]:
-    """Contacts eligible to receive SOS alerts, in contact priority order."""
-    return [c for c in list_contacts(session, user_ref) if c.active]
+def eligible_contacts(session: Session, user_ref: str) -> list[EmergencyContact]:
+    """Contacts eligible to receive SOS alerts, in priority order.
+
+    Eligibility requires all of: active (user opted in), verified (the recipient
+    confirmed ownership/consent), and not suppressed (no prior bounce/complaint).
+    """
+    return [
+        c
+        for c in list_contacts(session, user_ref)
+        if c.active and c.verified and not c.suppressed
+    ]
 
 
 def get_contact(session: Session, user_ref: str, contact_id: str) -> EmergencyContact | None:
@@ -58,18 +69,10 @@ def get_contact(session: Session, user_ref: str, contact_id: str) -> EmergencyCo
     return contact
 
 
-def _normalize(raw: str, country: str | None) -> tuple[str, str]:
-    settings = get_settings()
-    try:
-        norm = normalize_phone(raw, default_region=country or settings.default_country)
-    except PhoneValidationError as exc:
-        raise ContactError(str(exc)) from exc
-    return norm.e164, norm.country
-
-
+# ── Writes ───────────────────────────────────────────────────────────────────
 def create_contact(session: Session, user_ref: str, data: ContactCreate) -> EmergencyContact:
     settings = get_settings()
-    e164, country = _normalize(data.phone, data.country)
+    email = normalize_email(data.email)
 
     existing = list_contacts(session, user_ref)
     if len(existing) >= settings.max_contacts_per_user:
@@ -77,15 +80,13 @@ def create_contact(session: Session, user_ref: str, data: ContactCreate) -> Emer
             f"Contact limit reached ({settings.max_contacts_per_user}). "
             "Remove one before adding another."
         )
-    if any(c.phone_e164 == e164 for c in existing):
-        raise ContactError("A contact with this phone number already exists.")
+    if any(c.email == email for c in existing):
+        raise ContactError("A contact with this email address already exists.")
 
     contact = EmergencyContact(
         user_ref=user_ref,
         name=data.name,
-        phone_e164=e164,
-        email=_normalize_email(data.email),
-        country=country,
+        email=email,
         relationship=data.relationship,
         priority=data.priority,
         active=data.active,
@@ -105,22 +106,24 @@ def update_contact(
         return None
 
     changes = data.model_dump(exclude_unset=True)
-    if "phone" in changes and changes["phone"] is not None:
-        e164, country = _normalize(changes["phone"], changes.get("country") or contact.country)
-        # Enforce uniqueness against the user's OTHER contacts.
+    if "email" in changes and changes["email"] is not None:
+        email = normalize_email(changes["email"])
         for c in list_contacts(session, user_ref):
-            if c.id != contact.id and c.phone_e164 == e164:
-                raise ContactError("A contact with this phone number already exists.")
-        contact.phone_e164 = e164
-        contact.country = country
-        # Changing the number invalidates any prior verification.
-        contact.verified = False
+            if c.id != contact.id and c.email == email:
+                raise ContactError("A contact with this email address already exists.")
+        if email != contact.email:
+            contact.email = email
+            # A new address invalidates any prior verification + suppression.
+            contact.verified = False
+            contact.verified_at = None
+            contact.verification_token_hash = None
+            contact.verification_expires_at = None
+            contact.suppressed = False
+            contact.suppressed_reason = None
     if changes.get("name") is not None:
         if not str(changes["name"]).strip():
             raise ContactError("name is required")
         contact.name = str(changes["name"]).strip()
-    if "email" in changes:
-        contact.email = _normalize_email(changes["email"])
     if "relationship" in changes:
         contact.relationship = changes["relationship"]
     if changes.get("priority") is not None:
@@ -142,3 +145,81 @@ def delete_contact(session: Session, user_ref: str, contact_id: str) -> bool:
     session.delete(contact)
     session.commit()
     return True
+
+
+# ── Verification ──────────────────────────────────────────────────────────────
+def start_verification(
+    session: Session, user_ref: str, contact_id: str
+) -> tuple[EmergencyContact, str] | None:
+    """Mint a fresh single-use token for a contact and persist only its hash.
+
+    Returns (contact, raw_token). The RAW token is returned so the caller can
+    build + send the verification link; it is never stored. Returns None if the
+    contact does not belong to the user.
+    """
+    contact = get_contact(session, user_ref, contact_id)
+    if contact is None:
+        return None
+    token = verification.generate_token()
+    now = utcnow()
+    contact.verification_token_hash = verification.hash_token(token)
+    contact.verification_sent_at = now
+    contact.verification_expires_at = now + timedelta(
+        seconds=get_settings().email_verification_ttl_seconds
+    )
+    contact.updated_at = now
+    session.add(contact)
+    session.commit()
+    session.refresh(contact)
+    return contact, token
+
+
+def verify_email_token(session: Session, token: str) -> EmergencyContact | None:
+    """Consume a verification token: mark the contact verified (single-use).
+
+    Returns the contact on success, or None if the token is unknown/expired/used.
+    """
+    if not token:
+        return None
+    token_hash = verification.hash_token(token)
+    contact = session.exec(
+        select(EmergencyContact).where(
+            EmergencyContact.verification_token_hash == token_hash
+        )
+    ).first()
+    if contact is None:
+        return None
+    now = utcnow()
+    if contact.verification_expires_at is None or contact.verification_expires_at < now:
+        return None  # expired
+    contact.verified = True
+    contact.verified_at = now
+    # Single-use: clear the token so the same link cannot be replayed.
+    contact.verification_token_hash = None
+    contact.verification_expires_at = None
+    # A fresh confirmation clears any stale suppression.
+    contact.suppressed = False
+    contact.suppressed_reason = None
+    contact.updated_at = now
+    session.add(contact)
+    session.commit()
+    session.refresh(contact)
+    return contact
+
+
+def suppress_contact(session: Session, contact_id: str | None, reason: str) -> None:
+    """Mark a contact suppressed after a hard bounce / spam complaint.
+
+    Suppression stops future sends to an address that rejects us, independently of
+    the user's ``active`` preference. No-op if the contact no longer exists.
+    """
+    if not contact_id:
+        return
+    contact = session.get(EmergencyContact, contact_id)
+    if contact is None:
+        return
+    contact.suppressed = True
+    contact.suppressed_reason = reason[:200] if reason else "bounce/complaint"
+    contact.updated_at = utcnow()
+    session.add(contact)
+    session.commit()

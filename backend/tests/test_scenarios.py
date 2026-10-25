@@ -113,7 +113,7 @@ def test_prompt_enforces_honesty_no_dispatch():
     # The explicit forbidden-claim list.
     for claim in ("on the way", "shared"):
         assert claim in p
-    # The agent may queue SMS alerts, but must distinguish queued from delivered.
+    # The agent may queue email alerts, but must distinguish queued from delivered.
     assert "queued" in p
     assert "never" in p and "delivered" in p
 

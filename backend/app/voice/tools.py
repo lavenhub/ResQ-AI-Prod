@@ -176,15 +176,15 @@ class VoiceTools:
             }
         )
 
-    # ── tool: trigger SMS alerts to the caller's saved contacts ────────────
+    # ── tool: trigger email alerts to the caller's saved contacts ──────────
     async def trigger_sos_alert(self, params: FunctionCallParams) -> None:
-        """Send the emergency SMS to the caller's OWN saved contacts.
+        """Send the emergency EMAIL to the caller's OWN saved, verified contacts.
 
         Guardrails baked in (the model cannot bypass them):
           * requires an authenticated session (user_ref from the signed token);
             an anonymous call cannot trigger alerts.
-          * recipients come ONLY from the user's stored contacts — the model
-            never supplies phone numbers.
+          * recipients come ONLY from the user's stored, verified contacts — the
+            model never supplies email addresses.
           * idempotent per voice session, so re-calling it never double-sends.
           * returns an HONEST status (recorded / queued), never "delivered".
         """
@@ -216,7 +216,7 @@ class VoiceTools:
 
         def _work():
             with session_scope() as s:
-                contacts = contact_service.active_contacts(s, c.user_ref)  # type: ignore[arg-type]
+                contacts = contact_service.eligible_contacts(s, c.user_ref)  # type: ignore[arg-type]
                 if not contacts:
                     return ("no_contacts", None, None)
                 incident, jobs, created = incident_service.create_sos_incident(
@@ -235,7 +235,7 @@ class VoiceTools:
                 {
                     "ok": False,
                     "error": "no_contacts",
-                    "note": "The caller has no saved emergency contacts to alert. Advise "
+                    "note": "The caller has no verified emergency contacts to alert. Advise "
                     "them to call 112/108 and reach someone nearby.",
                 }
             )
@@ -248,9 +248,9 @@ class VoiceTools:
                 "incident_id": incident_id,
                 "recipients_queued": summary.get("total") if summary else 0,
                 # Honesty: queued is NOT delivered.
-                "note": "Incident recorded and SMS alerts QUEUED to the caller's saved "
-                "contacts. I cannot yet confirm the messages were delivered. No rescue "
-                "vehicle has been dispatched — advise the caller to call 112/108.",
+                "note": "Incident recorded and EMAIL alerts QUEUED to the caller's saved, "
+                "verified contacts. I cannot yet confirm the messages were delivered. No "
+                "rescue vehicle has been dispatched — advise the caller to call 112/108.",
             }
         )
 
@@ -349,10 +349,10 @@ def build_tools_schema() -> ToolsSchema:
             ),
             FunctionSchema(
                 name="trigger_sos_alert",
-                description="Send an emergency SMS to the caller's OWN saved emergency "
-                "contacts. ONLY call this AFTER the caller clearly confirms they want "
-                "their contacts alerted (ask first). You never provide phone numbers — "
-                "they come from the caller's saved contacts. Safe to call once; it will "
+                description="Send an emergency EMAIL to the caller's OWN saved, verified "
+                "emergency contacts. ONLY call this AFTER the caller clearly confirms they "
+                "want their contacts alerted (ask first). You never provide email addresses "
+                "— they come from the caller's saved contacts. Safe to call once; it will "
                 "not double-send. Returns whether alerts were QUEUED (not proof of "
                 "delivery).",
                 properties={

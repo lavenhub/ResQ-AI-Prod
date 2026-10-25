@@ -1,42 +1,44 @@
-"""Integration tests: the full SOS pipeline on the mock provider.
+"""Integration tests: the full SOS email pipeline on the mock provider.
 
-Covers mission Phase 13 integration cases: authed SOS -> persistent incident +
-durable jobs; unauth blocked; no-contacts handled; idempotency (no duplicate
-wave); independent per-recipient processing; provider-accepted vs delivered
-distinct; duplicate/forged callbacks safe; missing location still alerts; manual
-retry; cross-user isolation; cancellation.
+Covers mission Phase 14 integration cases: authed SOS -> persistent incident +
+durable jobs; unauth blocked; no-verified-contacts handled; idempotency (no
+duplicate wave); independent per-recipient processing; provider-accepted vs
+delivered distinct; duplicate/forged webhooks safe; bounce suppression; missing
+location still alerts; manual retry; cross-user isolation; cancellation.
 """
 
 from __future__ import annotations
 
+from tests.helpers import WEBHOOK_HEADERS, WEBHOOK_URL, add_contact, add_verified_contact
+
 from app.services.notifier import drain_pending
 
-CB = "/api/sms/callback?secret=test-callback-secret"
 
-
-def _add_contact(client, headers, name, phone, active=True):
-    r = client.post(
-        "/api/contacts", headers=headers, json={"name": name, "phone": phone, "active": active}
+def _deliver_event(client, email_id, event="email.delivered"):
+    return client.post(
+        WEBHOOK_URL,
+        headers=WEBHOOK_HEADERS,
+        json={"type": event, "data": {"email_id": email_id}},
     )
-    assert r.status_code == 201, r.text
-    return r.json()
 
 
 def test_sos_requires_auth(client):
     assert client.post("/api/emergency/sos", json={}).status_code == 401
 
 
-def test_sos_without_contacts_is_409(client, unique_user):
+def test_sos_without_verified_contacts_is_409(client, unique_user):
     _, headers = unique_user
+    # An unverified contact is NOT eligible.
+    add_contact(client, headers, "Mum", "unverified@example.com")
     r = client.post("/api/emergency/sos", headers=headers, json={"incident_type": "Fall"})
     assert r.status_code == 409
-    assert "contact" in r.json()["detail"].lower()
+    assert "verif" in r.json()["detail"].lower()
 
 
-def test_sos_creates_incident_and_pending_jobs(client, unique_user):
+def test_sos_creates_incident_and_queued_jobs(client, unique_user):
     _, headers = unique_user
-    _add_contact(client, headers, "Mum", "+919811111111")
-    _add_contact(client, headers, "Dad", "+919822222222")
+    add_verified_contact(client, headers, "Mum", "mum@example.com")
+    add_verified_contact(client, headers, "Dad", "dad@example.com")
 
     r = client.post(
         "/api/emergency/sos",
@@ -50,14 +52,15 @@ def test_sos_creates_incident_and_pending_jobs(client, unique_user):
     assert body["status"] == "ACTIVE"
     assert body["location_available"] is True
     assert len(body["notifications"]) == 2
-    # Before any worker run, everything is PENDING — never claimed as sent.
-    assert all(n["status"] == "pending" for n in body["notifications"])
+    assert all(n["channel"] == "email" for n in body["notifications"])
+    # Before any worker run, everything is QUEUED — never claimed as sent.
+    assert all(n["status"] == "queued" for n in body["notifications"])
     assert body["notification_summary"]["overall"] == "processing"
 
 
 def test_missing_location_still_queues(client, unique_user):
     _, headers = unique_user
-    _add_contact(client, headers, "Mum", "+919833333333")
+    add_verified_contact(client, headers, "Mum", "noloc@example.com")
     r = client.post("/api/emergency/sos", headers=headers, json={"incident_type": "Medical"})
     assert r.status_code == 200
     assert r.json()["location_available"] is False
@@ -66,19 +69,18 @@ def test_missing_location_still_queues(client, unique_user):
 
 def test_idempotent_sos_does_not_double_queue(client, unique_user):
     _, headers = unique_user
-    _add_contact(client, headers, "Mum", "+919844444444")
+    add_verified_contact(client, headers, "Mum", "idem@example.com")
     payload = {"incident_type": "Fire", "idempotency_key": "abc-123"}
     first = client.post("/api/emergency/sos", headers=headers, json=payload).json()
     second = client.post("/api/emergency/sos", headers=headers, json=payload).json()
     assert first["incident_id"] == second["incident_id"]
     assert second["created"] is False
-    # No second wave of messages.
     assert len(second["notifications"]) == len(first["notifications"]) == 1
 
 
-def test_worker_marks_accepted_not_delivered_then_callback_delivers(client, unique_user):
+def test_worker_marks_accepted_not_delivered_then_webhook_delivers(client, unique_user):
     _, headers = unique_user
-    _add_contact(client, headers, "Mum", "+919855555551")
+    add_verified_contact(client, headers, "Mum", "accept@example.com")
     inc_id = client.post(
         "/api/emergency/sos", headers=headers, json={"incident_type": "Fall"}
     ).json()["incident_id"]
@@ -87,13 +89,12 @@ def test_worker_marks_accepted_not_delivered_then_callback_delivers(client, uniq
 
     status = client.get(f"/api/emergency/incidents/{inc_id}", headers=headers).json()
     n = status["notifications"][0]
-    assert n["status"] == "provider_accepted"  # accepted != delivered
+    assert n["status"] == "accepted_by_provider"  # accepted != delivered
     assert n["provider_message_id"]
     assert status["notification_summary"]["overall"] == "provider_accepted"
 
-    # Now a carrier DLR confirms delivery.
     mid = n["provider_message_id"]
-    cb = client.post(CB, json={"message_id": mid, "status": "delivered"})
+    cb = _deliver_event(client, mid)
     assert cb.status_code == 200 and cb.json()["applied"] == 1
 
     after = client.get(f"/api/emergency/incidents/{inc_id}", headers=headers).json()
@@ -102,9 +103,9 @@ def test_worker_marks_accepted_not_delivered_then_callback_delivers(client, uniq
     assert after["notification_summary"]["overall"] == "all_delivered"
 
 
-def test_duplicate_and_terminal_callbacks_do_not_regress(client, unique_user):
+def test_duplicate_and_terminal_webhooks_do_not_regress(client, unique_user):
     _, headers = unique_user
-    _add_contact(client, headers, "Mum", "+919855555552")
+    add_verified_contact(client, headers, "Mum", "noregress@example.com")
     inc_id = client.post(
         "/api/emergency/sos", headers=headers, json={"incident_type": "Fall"}
     ).json()["incident_id"]
@@ -112,41 +113,65 @@ def test_duplicate_and_terminal_callbacks_do_not_regress(client, unique_user):
     mid = client.get(f"/api/emergency/incidents/{inc_id}", headers=headers).json()[
         "notifications"][0]["provider_message_id"]
 
-    # Deliver, then a late "failed" arrives out of order + a duplicate "delivered".
-    client.post(CB, json={"message_id": mid, "status": "delivered"})
-    client.post(CB, json={"message_id": mid, "status": "failed"})      # must NOT regress
-    client.post(CB, json={"message_id": mid, "status": "delivered"})   # duplicate harmless
+    _deliver_event(client, mid, "email.delivered")
+    _deliver_event(client, mid, "email.bounced")     # late/out-of-order: must NOT regress
+    _deliver_event(client, mid, "email.delivered")   # duplicate: harmless
 
     n = client.get(f"/api/emergency/incidents/{inc_id}", headers=headers).json()["notifications"][0]
     assert n["status"] == "delivered"
 
 
-def test_forged_callback_rejected(client):
-    r = client.post("/api/sms/callback?secret=WRONG", json={"message_id": "x", "status": "delivered"})
-    assert r.status_code == 401
-
-
-def test_independent_recipients_one_permanent_fail(client, unique_user):
+def test_bounce_marks_bounced_and_suppresses_contact(client, unique_user):
     _, headers = unique_user
-    _add_contact(client, headers, "Good", "+919866666661")
-    _add_contact(client, headers, "Bad", "+919866660000")  # ...0000 => permanent fail (mock)
+    cid = add_verified_contact(client, headers, "Bouncy", "bounce-target@example.com")["id"]
     inc_id = client.post(
         "/api/emergency/sos", headers=headers, json={"incident_type": "Fire"}
     ).json()["incident_id"]
     drain_pending()
-    notifs = {n["recipient_phone"]: n for n in
+    mid = client.get(f"/api/emergency/incidents/{inc_id}", headers=headers).json()[
+        "notifications"][0]["provider_message_id"]
+
+    assert _deliver_event(client, mid, "email.bounced").status_code == 200
+    n = client.get(f"/api/emergency/incidents/{inc_id}", headers=headers).json()["notifications"][0]
+    assert n["status"] == "bounced"
+    # The contact is now suppressed (won't be alerted again until re-verified).
+    contact = next(c for c in client.get("/api/contacts", headers=headers).json() if c["id"] == cid)
+    assert contact["suppressed"] is True
+
+
+def test_forged_webhook_rejected(client):
+    # No secret header at all.
+    assert client.post(
+        WEBHOOK_URL, json={"type": "email.delivered", "data": {"email_id": "x"}}
+    ).status_code == 401
+    # Wrong secret.
+    assert client.post(
+        WEBHOOK_URL,
+        headers={"x-webhook-secret": "WRONG"},
+        json={"type": "email.delivered", "data": {"email_id": "x"}},
+    ).status_code == 401
+
+
+def test_independent_recipients_one_permanent_fail(client, unique_user):
+    _, headers = unique_user
+    add_verified_contact(client, headers, "Good", "good@example.com")
+    add_verified_contact(client, headers, "Bad", "permanent@example.com")  # mock -> permanent fail
+    inc_id = client.post(
+        "/api/emergency/sos", headers=headers, json={"incident_type": "Fire"}
+    ).json()["incident_id"]
+    drain_pending()
+    notifs = {n["recipient_email"]: n for n in
               client.get(f"/api/emergency/incidents/{inc_id}", headers=headers).json()["notifications"]}
-    assert notifs["+919866666661"]["status"] == "provider_accepted"
-    assert notifs["+919866660000"]["status"] == "failed"  # one bad number didn't block the other
+    assert notifs["good@example.com"]["status"] == "accepted_by_provider"
+    assert notifs["permanent@example.com"]["status"] == "failed"  # one bad address didn't block the other
 
 
 def test_retryable_eventually_fails_after_max_attempts(client, unique_user):
     _, headers = unique_user
-    _add_contact(client, headers, "Flaky", "+919877779999")  # ...9999 => retryable (mock)
+    add_verified_contact(client, headers, "Flaky", "retryable@example.com")  # mock -> retryable
     inc_id = client.post(
         "/api/emergency/sos", headers=headers, json={"incident_type": "Fire"}
     ).json()["incident_id"]
-    # Drain repeatedly; backoff schedules next_attempt into the future, so sleep a bit.
     import time
 
     for _ in range(6):
@@ -159,7 +184,7 @@ def test_retryable_eventually_fails_after_max_attempts(client, unique_user):
 
 def test_timeout_outcome_is_unknown_not_retried(client, unique_user):
     _, headers = unique_user
-    _add_contact(client, headers, "Timeout", "+919877777777")  # ...7777 => UNKNOWN (mock)
+    add_verified_contact(client, headers, "Timeout", "timeout@example.com")  # mock -> UNKNOWN
     inc_id = client.post(
         "/api/emergency/sos", headers=headers, json={"incident_type": "Fire"}
     ).json()["incident_id"]
@@ -170,7 +195,7 @@ def test_timeout_outcome_is_unknown_not_retried(client, unique_user):
 
 def test_manual_retry_of_failed(client, unique_user):
     _, headers = unique_user
-    _add_contact(client, headers, "Bad", "+919888880000")  # permanent fail
+    add_verified_contact(client, headers, "Bad", "permanent@example.com")  # permanent fail
     inc_id = client.post(
         "/api/emergency/sos", headers=headers, json={"incident_type": "Fire"}
     ).json()["incident_id"]
@@ -179,35 +204,35 @@ def test_manual_retry_of_failed(client, unique_user):
         "notifications"][0]["id"]
     r = client.post(f"/api/emergency/notifications/{nid}/retry", headers=headers)
     assert r.status_code == 200
-    assert r.json()["status"] == "pending"
+    assert r.json()["status"] == "queued"
 
 
 def test_cannot_read_another_users_incident(client, unique_user, auth_other):
     _, headers = unique_user
     _, other = auth_other
-    _add_contact(client, headers, "Mum", "+919899990001")
+    add_verified_contact(client, headers, "Mum", "isolate@example.com")
     inc_id = client.post(
         "/api/emergency/sos", headers=headers, json={"incident_type": "Fall"}
     ).json()["incident_id"]
     assert client.get(f"/api/emergency/incidents/{inc_id}", headers=other).status_code == 404
 
 
-def test_cancel_incident_stops_pending(client, unique_user):
+def test_cancel_incident_stops_queued(client, unique_user):
     _, headers = unique_user
-    _add_contact(client, headers, "Mum", "+919899990002")
+    add_verified_contact(client, headers, "Mum", "cancel@example.com")
     inc_id = client.post(
         "/api/emergency/sos", headers=headers, json={"incident_type": "Fall"}
     ).json()["incident_id"]
     r = client.post(f"/api/emergency/incidents/{inc_id}/cancel", headers=headers)
     assert r.status_code == 200
     assert r.json()["status"] == "CANCELLED"
-    # Pending jobs are stopped (marked failed) before any send.
+    # Queued jobs are stopped (marked cancelled) before any send.
     n = client.get(f"/api/emergency/incidents/{inc_id}", headers=headers).json()["notifications"][0]
-    assert n["status"] == "failed"
+    assert n["status"] == "cancelled"
 
 
-def test_sms_health_reports_mock(client):
-    h = client.get("/api/sms/health").json()
+def test_email_health_reports_mock(client):
+    h = client.get("/api/email/health").json()
     assert h["provider"] == "mock"
     assert h["isMock"] is True
     assert h["realSendingConfigured"] is False

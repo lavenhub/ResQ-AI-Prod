@@ -18,9 +18,9 @@ from loguru import logger
 from . import __version__
 from .config import get_settings
 from .db import init_db
-from .routes import auth, callbacks, contacts, emergency, incidents, resqai, rtc, system
+from .routes import auth, contacts, email_webhook, emergency, incidents, resqai, rtc, system
+from .services.email import get_provider
 from .services.notifier import NotificationWorker
-from .services.sms import get_provider
 from .voice.session import SessionManager
 
 
@@ -37,25 +37,25 @@ async def lifespan(app: FastAPI):
     app.state.session_manager = SessionManager(max_concurrent=settings.max_concurrent_sessions)
     app.state.voice_tasks = set()
 
-    # Surface SMS provider readiness at startup (actionable, never silent).
+    # Surface email provider readiness at startup (actionable, never silent).
     provider = get_provider()
     problems = provider.validate_configuration()
-    if provider.name == "mock":
+    if provider.is_mock:
         logger.warning(
-            "SMS provider = MOCK — no real SMS will be sent. Set SMS_PROVIDER=msg91 "
-            "(+ MSG91 credentials) for real delivery."
+            "Email provider = MOCK — no real email will be sent. Set EMAIL_PROVIDER=resend "
+            "(+ EMAIL_API_KEY, EMAIL_FROM_ADDRESS, EMAIL_WEBHOOK_SECRET) for real delivery."
         )
     elif problems:
-        logger.warning(f"SMS provider '{provider.name}' NOT ready: {'; '.join(problems)}")
+        logger.warning(f"Email provider '{provider.name}' NOT ready: {'; '.join(problems)}")
     else:
-        logger.info(f"SMS provider '{provider.name}' ready for real sending")
+        logger.info(f"Email provider '{provider.name}' ready for real sending")
 
     # Start the background notification worker (durable outbox processor).
     app.state.notification_worker = NotificationWorker()
-    if settings.sms_worker_autostart:
+    if settings.email_worker_autostart:
         app.state.notification_worker.start()
     else:
-        logger.info("Notification worker autostart disabled (SMS_WORKER_AUTOSTART=false)")
+        logger.info("Notification worker autostart disabled (EMAIL_WORKER_AUTOSTART=false)")
 
     logger.info(
         f"ResQAI backend {__version__} ready — voice "
@@ -100,7 +100,7 @@ def create_app() -> FastAPI:
     app.include_router(incidents.router)
     app.include_router(contacts.router)
     app.include_router(emergency.router)
-    app.include_router(callbacks.router)
+    app.include_router(email_webhook.router)
     app.include_router(rtc.router)
     app.include_router(resqai.router)
     return app

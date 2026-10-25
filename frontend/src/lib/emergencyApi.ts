@@ -1,8 +1,8 @@
 /**
- * Typed client for the backend emergency pipeline:
- *   - emergency contacts CRUD   (/api/contacts)
+ * Typed client for the backend emergency EMAIL pipeline:
+ *   - emergency contacts CRUD + verification  (/api/contacts)
  *   - SOS trigger + incident status + retry/cancel (/api/emergency/*)
- *   - SMS provider health        (/api/sms/health)
+ *   - email provider health        (/api/email/health)
  *
  * All calls go through apiFetch, which attaches the session bearer token.
  * No provider secrets ever live here — the browser only talks to our backend.
@@ -11,23 +11,28 @@
 import { apiFetch } from "@/lib/api";
 
 export type NotificationStatus =
-  | "pending"
+  | "queued"
   | "processing"
-  | "provider_accepted"
+  | "accepted_by_provider"
   | "delivered"
+  | "deferred"
+  | "bounced"
   | "failed"
-  | "unknown";
+  | "unknown"
+  | "cancelled"
+  | "pending";
 
 export interface Contact {
   id: string;
   name: string;
-  phone_e164: string;
-  email: string | null;
-  country: string;
+  email: string;
   relationship: string | null;
   priority: number;
   active: boolean;
   verified: boolean;
+  verified_at: string | null;
+  suppressed: boolean;
+  suppressed_reason: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -36,8 +41,7 @@ export interface NotificationRead {
   id: string;
   incident_id: string;
   recipient_name: string | null;
-  recipient_phone: string;
-  recipient_email: string | null;
+  recipient_email: string;
   channel: string;
   status: NotificationStatus;
   attempts: number;
@@ -59,7 +63,7 @@ export interface SosResponse {
   notification_summary: { overall: string; total: number; counts: Record<string, number> };
 }
 
-export interface SmsHealth {
+export interface EmailHealth {
   provider: string;
   channel: string;
   ready: boolean;
@@ -68,31 +72,40 @@ export interface SmsHealth {
   realSendingConfigured: boolean;
 }
 
+export interface VerificationStartResponse {
+  contact_id: string;
+  sent: boolean;
+  dev_verification_url: string | null;
+  detail: string | null;
+}
+
 // ── Contacts ──────────────────────────────────────────────────────────────────
 export const listContacts = () => apiFetch<Contact[]>("/api/contacts");
 
 export const createContact = (c: {
   name: string;
-  phone: string;
-  email?: string;
-  country?: string;
+  email: string;
   relationship?: string;
   priority?: number;
   active?: boolean;
 }) => apiFetch<Contact>("/api/contacts", { method: "POST", body: JSON.stringify(c) });
 
-export const updateContact = (id: string, patch: Partial<{
-  name: string;
-  phone: string;
-  email: string;
-  country: string;
-  relationship: string;
-  priority: number;
-  active: boolean;
-}>) => apiFetch<Contact>(`/api/contacts/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
+export const updateContact = (
+  id: string,
+  patch: Partial<{
+    name: string;
+    email: string;
+    relationship: string;
+    priority: number;
+    active: boolean;
+  }>,
+) => apiFetch<Contact>(`/api/contacts/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
 
 export const deleteContact = (id: string) =>
   apiFetch<void>(`/api/contacts/${id}`, { method: "DELETE" });
+
+export const sendContactVerification = (id: string) =>
+  apiFetch<VerificationStartResponse>(`/api/contacts/${id}/send-verification`, { method: "POST" });
 
 // ── SOS ─────────────────────────────────────────────────────────────────────
 export const triggerSos = (body: {
@@ -115,24 +128,41 @@ export const retryNotification = (id: string) =>
 export const cancelIncident = (id: string) =>
   apiFetch(`/api/emergency/incidents/${id}/cancel`, { method: "POST" });
 
-// ── SMS health ────────────────────────────────────────────────────────────────
-export const smsHealth = () => apiFetch<SmsHealth>("/api/sms/health");
+// ── Email health ──────────────────────────────────────────────────────────────
+export const emailHealth = () => apiFetch<EmailHealth>("/api/email/health");
 
 // ── Human-readable, HONEST status labels ──────────────────────────────────────
 export const STATUS_LABEL: Record<NotificationStatus, string> = {
+  queued: "Queued",
   pending: "Queued",
   processing: "Sending…",
-  provider_accepted: "Accepted by carrier",
+  accepted_by_provider: "Accepted by provider",
   delivered: "Delivered",
+  deferred: "Delayed",
+  bounced: "Bounced",
   failed: "Failed",
   unknown: "Unknown",
+  cancelled: "Cancelled",
 };
 
 export const STATUS_HINT: Record<NotificationStatus, string> = {
+  queued: "Waiting in the send queue.",
   pending: "Waiting in the send queue.",
-  processing: "Handing to the SMS provider now.",
-  provider_accepted: "The carrier accepted it — not yet confirmed delivered.",
-  delivered: "The carrier confirmed delivery to the handset.",
+  processing: "Handing the email to the provider now.",
+  accepted_by_provider: "The provider accepted it — not yet confirmed delivered to the inbox.",
+  delivered: "The provider confirmed delivery to the recipient's mailbox.",
+  deferred: "The provider reported a temporary delay and is still trying.",
+  bounced: "The address rejected the email. It has been suppressed.",
   failed: "Could not be sent. You can retry.",
   unknown: "Send result could not be confirmed (e.g. a timeout). You can retry.",
+  cancelled: "Cancelled before it was sent.",
 };
+
+// Statuses that are finished (no longer in flight) — used to stop polling.
+export const TERMINAL_STATUSES: NotificationStatus[] = [
+  "delivered",
+  "bounced",
+  "failed",
+  "unknown",
+  "cancelled",
+];

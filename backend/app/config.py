@@ -65,8 +65,9 @@ class Settings:
     )
 
     # ── Auth (demo) ───────────────────────────────────────────────────────
-    # The frontend advertises a fixed demo OTP. This stays a DEMO until a real
-    # SMS provider is wired in a later phase — see README "Known limitations".
+    # The frontend advertises a fixed demo OTP. Login remains a DEMO until a real
+    # OTP delivery channel is wired — see README "Known limitations". This is the
+    # user's own sign-in and is independent of emergency email notifications.
     demo_otp_code: str = field(default_factory=lambda: _get("DEMO_OTP_CODE", "123456"))
 
     # ── Voice / AI provider ───────────────────────────────────────────────
@@ -153,63 +154,70 @@ class Settings:
         default_factory=lambda: _get_int("AUTH_TOKEN_TTL_SECONDS", 7 * 24 * 3600)
     )
 
-    # ── SMS provider (emergency alerting) ─────────────────────────────────
-    # Which provider implementation to use. "mock" is for dev/tests ONLY and
-    # never contacts a real carrier. "msg91" is the real India SMS provider.
-    sms_provider: str = field(default_factory=lambda: _get("SMS_PROVIDER", "mock"))
-    # MSG91 v5 Flow API credentials (server-only secrets). See README for DLT setup.
-    msg91_auth_key: str = field(default_factory=lambda: _get("MSG91_AUTH_KEY"))
-    # The DLT-approved Flow/template id (MSG91 calls this flow_id in the v5 API).
-    msg91_template_id: str = field(default_factory=lambda: _get("MSG91_TEMPLATE_ID"))
-    # The approved 6-char DLT sender/header id (e.g. "RESQAI").
-    msg91_sender_id: str = field(default_factory=lambda: _get("MSG91_SENDER_ID"))
-    # Optional DLT entity id (PE id). Not sent in the API call, kept for config
-    # validation / operator reference.
-    msg91_dlt_entity_id: str = field(default_factory=lambda: _get("MSG91_DLT_ENTITY_ID"))
-    # Base URL override (lets tests/staging point elsewhere).
-    msg91_base_url: str = field(
-        default_factory=lambda: _get("MSG91_BASE_URL", "https://api.msg91.com")
+    # ── Email provider (emergency alerting via transactional email) ───────
+    # Which provider implementation to use:
+    #   "mock"   — dev/tests ONLY; never sends a real email.
+    #   "resend" — the real transactional email provider (https://resend.com).
+    # A provider abstraction (app/services/email) lets a second provider be added
+    # later without touching the pipeline.
+    email_provider: str = field(default_factory=lambda: _get("EMAIL_PROVIDER", "mock"))
+    # Server-only API key for the provider (Resend: "re_..."). NEVER sent to the
+    # frontend. Absent => provider reports "not configured" (we never fake a send).
+    email_api_key: str = field(default_factory=lambda: _get("EMAIL_API_KEY"))
+    # The verified sender address + display name. For a real provider the domain
+    # must be verified (SPF/DKIM) — see README. From address is REQUIRED to send.
+    email_from_address: str = field(default_factory=lambda: _get("EMAIL_FROM_ADDRESS"))
+    email_from_name: str = field(
+        default_factory=lambda: _get("EMAIL_FROM_NAME", "ResQAI Alerts")
+    )
+    # Optional Reply-To (e.g. a monitored inbox). Empty => no Reply-To header.
+    email_reply_to: str = field(default_factory=lambda: _get("EMAIL_REPLY_TO"))
+    # Webhook signing secret from the provider (Resend/Svix: "whsec_..."). Used to
+    # verify inbound delivery-event webhooks. Empty => webhooks are REJECTED.
+    email_webhook_secret: str = field(default_factory=lambda: _get("EMAIL_WEBHOOK_SECRET"))
+    # Provider API base URL. Override only for a staging proxy or local test sink;
+    # defaults to Resend's production API.
+    email_api_base: str = field(
+        default_factory=lambda: _get("EMAIL_API_BASE", "https://api.resend.com")
     )
     # Per-send HTTP timeout to the provider (ms). A send must not hang a worker.
-    sms_provider_timeout_ms: int = field(
-        default_factory=lambda: _get_int("SMS_PROVIDER_TIMEOUT_MS", 8000)
+    email_provider_timeout_ms: int = field(
+        default_factory=lambda: _get_int("EMAIL_PROVIDER_TIMEOUT_MS", 10000)
     )
     # Max send attempts per recipient before dead-lettering (FAILED).
-    sms_max_attempts: int = field(default_factory=lambda: _get_int("SMS_MAX_ATTEMPTS", 4))
+    email_max_attempts: int = field(default_factory=lambda: _get_int("EMAIL_MAX_ATTEMPTS", 4))
     # Base delay for exponential backoff between retries (ms).
-    sms_retry_base_delay_ms: int = field(
-        default_factory=lambda: _get_int("SMS_RETRY_BASE_DELAY_MS", 2000)
+    email_retry_base_delay_ms: int = field(
+        default_factory=lambda: _get_int("EMAIL_RETRY_BASE_DELAY_MS", 2000)
     )
     # How often the background notifier polls the outbox for due jobs (ms).
-    sms_worker_poll_ms: int = field(default_factory=lambda: _get_int("SMS_WORKER_POLL_MS", 1000))
+    email_worker_poll_ms: int = field(
+        default_factory=lambda: _get_int("EMAIL_WORKER_POLL_MS", 1000)
+    )
     # Start the background worker automatically at app startup. Tests set this
     # False and drive processing deterministically instead.
-    sms_worker_autostart: bool = field(
-        default_factory=lambda: _get_bool("SMS_WORKER_AUTOSTART", True)
+    email_worker_autostart: bool = field(
+        default_factory=lambda: _get_bool("EMAIL_WORKER_AUTOSTART", True)
     )
-    # Shared secret the provider must present on the delivery-report callback.
-    # MSG91 SMS DLR has no HMAC signing, so we require this token in the callback
-    # URL and compare it in constant time. Empty => callbacks are REJECTED.
-    sms_callback_secret: str = field(default_factory=lambda: _get("SMS_CALLBACK_SECRET"))
-    # Public base URL the provider should call back to (for README/config echo).
-    sms_callback_url: str = field(default_factory=lambda: _get("SMS_CALLBACK_URL"))
-    # Product display name used in the SMS body (must match the DLT template).
-    sms_brand_name: str = field(default_factory=lambda: _get("SMS_BRAND_NAME", "RESQAI"))
+    # Reject webhook requests whose signed timestamp is older than this (seconds),
+    # to blunt replay attacks. Default 5 minutes (the Svix convention).
+    email_webhook_tolerance_seconds: int = field(
+        default_factory=lambda: _get_int("EMAIL_WEBHOOK_TOLERANCE_SECONDS", 300)
+    )
+    # Product display name used in the email subject/body.
+    email_brand_name: str = field(default_factory=lambda: _get("EMAIL_BRAND_NAME", "ResQAI"))
 
-    # ── Email channel (free, no DLT) — SMTP ───────────────────────────────
-    # Works with any SMTP server: a Gmail account + App Password, or a free
-    # transactional tier (e.g. Brevo). Used when SMS_PROVIDER=email.
-    smtp_host: str = field(default_factory=lambda: _get("SMTP_HOST"))
-    smtp_port: int = field(default_factory=lambda: _get_int("SMTP_PORT", 587))
-    smtp_username: str = field(default_factory=lambda: _get("SMTP_USERNAME"))
-    smtp_password: str = field(default_factory=lambda: _get("SMTP_PASSWORD"))
-    # The From: address (for Gmail this must be your own address; for Brevo a
-    # verified sender). Falls back to SMTP_USERNAME if unset.
-    smtp_from: str = field(default_factory=lambda: _get("SMTP_FROM"))
-    smtp_from_name: str = field(default_factory=lambda: _get("SMTP_FROM_NAME", "ResQAI Alerts"))
-    # STARTTLS (port 587) by default; set SMTP_USE_SSL=true for implicit TLS (465).
-    smtp_use_tls: bool = field(default_factory=lambda: _get_bool("SMTP_USE_TLS", True))
-    smtp_use_ssl: bool = field(default_factory=lambda: _get_bool("SMTP_USE_SSL", False))
+    # ── Public app URL (for links inside emails) ──────────────────────────
+    # The externally-reachable base URL of THIS backend, used to build the
+    # single-use contact verification link and (documentation) the webhook URL.
+    # Must be https and publicly reachable in production.
+    public_app_url: str = field(
+        default_factory=lambda: _get("PUBLIC_APP_URL", "http://localhost:8001")
+    )
+    # Lifetime of a contact email-verification token (seconds). Default 48h.
+    email_verification_ttl_seconds: int = field(
+        default_factory=lambda: _get_int("EMAIL_VERIFICATION_TTL_SECONDS", 48 * 3600)
+    )
 
     # ── Limits (abuse control) ────────────────────────────────────────────
     # Max emergency contacts a single user may store.

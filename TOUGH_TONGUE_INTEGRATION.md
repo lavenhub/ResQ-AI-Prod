@@ -123,8 +123,9 @@ Manual (needs a browser + microphone — not verifiable headlessly):
 ## Honest limitations (not implemented / not verified)
 
 - The hosted agent is a **conversation assistant only**. It does **not** dispatch
-  an ambulance/police/fire, send SMS, notify contacts, verify GPS, or call
-  emergency services. The modal shows a visible disclaimer saying so.
+  an ambulance/police/fire, email or notify contacts, verify GPS, or call
+  emergency services (those belong to the backend pipeline + the primary live
+  dispatcher). The modal shows a visible disclaimer saying so.
 - The emergency screen's ambulance/vehicle "dispatch" animation and the
   "Alert sent" flow belong to the **pre-existing** app and are simulated /
   config-dependent (EmailJS); this integration did not change or validate them.

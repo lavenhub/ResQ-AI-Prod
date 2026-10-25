@@ -9,6 +9,7 @@ import {
   createContact,
   deleteContact,
   listContacts,
+  sendContactVerification,
   updateContact,
   type Contact,
 } from "@/lib/emergencyApi";
@@ -51,39 +52,46 @@ function ProfilePage() {
   const navigate = useNavigate();
 
   // ── Personal ──────────────────────────────────────────────────────────────
-  const [name, setName]       = useState(() => load("resq_name", ""));
-  const [phone, setPhone]     = useState("");
+  const [name, setName] = useState(() => load("resq_name", ""));
+  const [phone, setPhone] = useState("");
 
   // ── Medical ───────────────────────────────────────────────────────────────
-  const [blood, setBlood]           = useState(() => load("resq_blood", "O+"));
-  const [age, setAge]               = useState<number>(() => load("resq_age", 28));
-  const [allergies, setAllergies]   = useState(() => load("resq_allergies", ""));
+  const [blood, setBlood] = useState(() => load("resq_blood", "O+"));
+  const [age, setAge] = useState<number>(() => load("resq_age", 28));
+  const [allergies, setAllergies] = useState(() => load("resq_allergies", ""));
   const [conditions, setConditions] = useState(() => load("resq_conditions", ""));
 
   // ── Preferences ───────────────────────────────────────────────────────────
   const [language, setLanguage] = useState(() => load("resq_language", "English"));
-  const [push, setPush]         = useState(() => load("resq_push", true));
+  const [push, setPush] = useState(() => load("resq_push", true));
 
-  // ── Emergency contacts (backend-owned, per-user, phone/E.164) ───────────────
-  const [contacts, setContacts]       = useState<Contact[]>([]);
+  // ── Emergency contacts (backend-owned, per-user, email + verification) ──────
+  const [contacts, setContacts] = useState<Contact[]>([]);
   const [contactsErr, setContactsErr] = useState("");
   const [contactsLoading, setContactsLoading] = useState(true);
 
   // ── Add-contact modal ─────────────────────────────────────────────────────
-  const [saved, setSaved]         = useState(false);
+  const [saved, setSaved] = useState(false);
   const [showModal, setShowModal] = useState(false);
-  const [newName, setNewName]     = useState("");
-  const [newPhone, setNewPhone]   = useState("");
-  const [newEmail, setNewEmail]   = useState("");
-  const [newCountry, setNewCountry] = useState("IN");
-  const [newRel, setNewRel]       = useState("");
-  const [modalErr, setModalErr]   = useState("");
+  const [newName, setNewName] = useState("");
+  const [newEmail, setNewEmail] = useState("");
+  const [newRel, setNewRel] = useState("");
+  const [modalErr, setModalErr] = useState("");
   const [modalBusy, setModalBusy] = useState(false);
+
+  // ── Per-contact verification feedback ───────────────────────────────────────
+  const [verifyBusy, setVerifyBusy] = useState<string | null>(null);
+  const [verifyMsg, setVerifyMsg] = useState<{ id: string; text: string; devUrl?: string } | null>(
+    null,
+  );
 
   const refreshContacts = () => {
     setContactsLoading(true);
     listContacts()
-      .then((rows) => { setContacts(rows); setContactsErr(""); })
+      .then((rows) => {
+        setContacts(rows);
+        setContactsErr("");
+      })
       .catch((e) => setContactsErr(e?.message || "Could not load contacts"))
       .finally(() => setContactsLoading(false));
   };
@@ -119,25 +127,27 @@ function ProfilePage() {
 
   const openModal = () => {
     setNewName("");
-    setNewPhone("");
     setNewEmail("");
-    setNewCountry("IN");
     setNewRel("");
     setModalErr("");
     setShowModal(true);
   };
 
   const addContact = async () => {
-    if (!newName.trim()) { setModalErr("Name is required."); return; }
-    if (!newPhone.trim()) { setModalErr("Phone number is required."); return; }
+    if (!newName.trim()) {
+      setModalErr("Name is required.");
+      return;
+    }
+    if (!newEmail.trim()) {
+      setModalErr("Email address is required.");
+      return;
+    }
     setModalBusy(true);
     setModalErr("");
     try {
       const created = await createContact({
         name: newName.trim(),
-        phone: newPhone.trim(),
-        email: newEmail.trim() || undefined,
-        country: newCountry.trim() || "IN",
+        email: newEmail.trim(),
         relationship: newRel.trim() || undefined,
       });
       setContacts((prev) => [...prev, created]);
@@ -149,15 +159,42 @@ function ProfilePage() {
     }
   };
 
+  const verifyContact = async (c: Contact) => {
+    setVerifyBusy(c.id);
+    setVerifyMsg(null);
+    try {
+      const r = await sendContactVerification(c.id);
+      if (r.dev_verification_url) {
+        // Dev/mock provider: no real inbox, so surface the link to complete the loop.
+        setVerifyMsg({
+          id: c.id,
+          text: "Demo mode — open this link to confirm the contact:",
+          devUrl: r.dev_verification_url,
+        });
+      } else if (r.sent) {
+        setVerifyMsg({
+          id: c.id,
+          text: `Verification email sent to ${c.email}. Ask them to confirm.`,
+        });
+      } else {
+        setVerifyMsg({ id: c.id, text: r.detail || "Could not send the verification email." });
+      }
+    } catch (e: any) {
+      setVerifyMsg({ id: c.id, text: e?.message || "Could not send verification." });
+    } finally {
+      setVerifyBusy(null);
+    }
+  };
+
   // Contacts are saved immediately via the API; this persists the rest.
   const saveAll = () => {
-    localStorage.setItem("resq_name",       JSON.stringify(name));
-    localStorage.setItem("resq_blood",      JSON.stringify(blood));
-    localStorage.setItem("resq_age",        JSON.stringify(age));
-    localStorage.setItem("resq_allergies",  JSON.stringify(allergies));
+    localStorage.setItem("resq_name", JSON.stringify(name));
+    localStorage.setItem("resq_blood", JSON.stringify(blood));
+    localStorage.setItem("resq_age", JSON.stringify(age));
+    localStorage.setItem("resq_allergies", JSON.stringify(allergies));
     localStorage.setItem("resq_conditions", JSON.stringify(conditions));
-    localStorage.setItem("resq_language",   JSON.stringify(language));
-    localStorage.setItem("resq_push",       JSON.stringify(push));
+    localStorage.setItem("resq_language", JSON.stringify(language));
+    localStorage.setItem("resq_push", JSON.stringify(push));
     setSaved(true);
     setTimeout(() => setSaved(false), 2500);
   };
@@ -193,10 +230,8 @@ function ProfilePage() {
         </div>
 
         <div className="mt-4 grid gap-4 md:grid-cols-2">
-
           {/* ── Left column ── */}
           <div className="space-y-4">
-
             {/* Personal Info */}
             <section className="border-2 border-black bg-white p-4">
               <div className="mb-3 text-xs font-black uppercase">Personal Info</div>
@@ -217,7 +252,9 @@ function ProfilePage() {
                     readOnly
                     className="w-full border-2 border-black bg-black/5 px-3 py-2 text-sm font-semibold text-black/60"
                   />
-                  <p className="mt-1 text-[10px] text-black/40">Verified via OTP — cannot be changed here.</p>
+                  <p className="mt-1 text-[10px] text-black/40">
+                    Verified via OTP — cannot be changed here.
+                  </p>
                 </div>
               </div>
             </section>
@@ -233,7 +270,9 @@ function ProfilePage() {
                     onChange={(e) => setBlood(e.target.value)}
                     className="w-full border-2 border-black bg-white px-3 py-2 text-sm font-semibold"
                   >
-                    {BLOOD.map((b) => <option key={b}>{b}</option>)}
+                    {BLOOD.map((b) => (
+                      <option key={b}>{b}</option>
+                    ))}
                   </select>
                 </div>
                 <div>
@@ -255,7 +294,9 @@ function ProfilePage() {
                   />
                 </div>
                 <div>
-                  <label className="mb-1 block text-[10px] font-bold uppercase">Chronic Conditions</label>
+                  <label className="mb-1 block text-[10px] font-bold uppercase">
+                    Chronic Conditions
+                  </label>
                   <textarea
                     value={conditions}
                     onChange={(e) => setConditions(e.target.value)}
@@ -270,13 +311,13 @@ function ProfilePage() {
 
           {/* ── Right column ── */}
           <div className="space-y-4">
-
             {/* Emergency Contacts */}
             <section className="border-2 border-black bg-white p-4">
-              <div className="mb-1 text-xs font-black uppercase">Emergency Contacts (SMS)</div>
+              <div className="mb-1 text-xs font-black uppercase">Emergency Contacts (Email)</div>
               <p className="mb-3 text-[11px] text-black/60">
-                These numbers receive an SMS with your location when you trigger SOS. Saved securely
-                on the server — not verified until a confirmation step exists.
+                These contacts receive an email with your location when you trigger SOS. A contact
+                must confirm their email before it can be alerted — saving one never implies
+                consent.
               </p>
               {contactsErr && (
                 <div className="mb-2 border-2 border-[#C62828] bg-white px-3 py-2 text-[11px] font-semibold text-[#C62828]">
@@ -284,52 +325,97 @@ function ProfilePage() {
                 </div>
               )}
               <div className="space-y-2">
-                {contactsLoading && (
-                  <div className="text-xs text-black/50">Loading contacts…</div>
-                )}
+                {contactsLoading && <div className="text-xs text-black/50">Loading contacts…</div>}
                 {!contactsLoading && contacts.length === 0 && (
                   <div className="border-2 border-dashed border-black/40 px-3 py-2 text-[11px] text-black/50">
-                    No contacts yet. Add at least one so SOS can alert someone.
+                    No contacts yet. Add one and have them confirm their email so SOS can alert
+                    them.
                   </div>
                 )}
                 {contacts.map((c) => (
-                  <div key={c.id} className="flex items-center gap-3 border-2 border-black bg-white p-2">
-                    <div className="flex h-9 w-9 shrink-0 items-center justify-center border-2 border-black bg-black text-xs font-black text-white">
-                      {initials(c.name)}
+                  <div key={c.id} className="border-2 border-black bg-white p-2">
+                    <div className="flex items-center gap-3">
+                      <div className="flex h-9 w-9 shrink-0 items-center justify-center border-2 border-black bg-black text-xs font-black text-white">
+                        {initials(c.name)}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm font-bold text-black">
+                          {c.name}
+                          {c.relationship && (
+                            <span className="ml-1 text-[10px] font-normal text-black/50">
+                              · {c.relationship}
+                            </span>
+                          )}
+                        </div>
+                        <div className="truncate text-[11px] text-black/60">{c.email}</div>
+                        <div className="mt-0.5 flex flex-wrap items-center gap-2">
+                          <span
+                            className={`text-[9px] font-bold uppercase ${c.active ? "text-green-700" : "text-black/40"}`}
+                          >
+                            {c.active ? "Alerts ON" : "Alerts OFF"}
+                          </span>
+                          <span className="text-[9px] font-bold uppercase text-black/40">
+                            Priority {c.priority}
+                          </span>
+                          {c.suppressed ? (
+                            <span className="text-[9px] font-bold uppercase text-[#C62828]">
+                              Bounced / suppressed
+                            </span>
+                          ) : c.verified ? (
+                            <span className="text-[9px] font-bold uppercase text-green-700">
+                              ✓ Verified
+                            </span>
+                          ) : (
+                            <span className="text-[9px] font-bold uppercase text-amber-600">
+                              Unverified
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => toggleActive(c)}
+                        title={c.active ? "Disable alerts" : "Enable alerts"}
+                        className={`flex h-8 shrink-0 items-center justify-center border-2 border-black px-2 text-[10px] font-black uppercase ${c.active ? "bg-green-600 text-white" : "bg-white text-black"}`}
+                      >
+                        {c.active ? "ON" : "OFF"}
+                      </button>
+                      <button
+                        onClick={() => removeContact(c.id)}
+                        className="flex h-8 w-8 shrink-0 items-center justify-center border-2 border-black bg-white text-[#C62828]"
+                      >
+                        <Trash2 size={14} />
+                      </button>
                     </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm font-bold text-black">
-                        {c.name}
-                        {c.relationship && <span className="ml-1 text-[10px] font-normal text-black/50">· {c.relationship}</span>}
-                      </div>
-                      <div className="truncate text-[11px] text-black/60">
-                        {c.email || c.phone_e164}
-                      </div>
-                      <div className="mt-0.5 flex items-center gap-2">
-                        <span className={`text-[9px] font-bold uppercase ${c.active ? "text-green-700" : "text-black/40"}`}>
-                          {c.active ? "Alerts ON" : "Alerts OFF"}
-                        </span>
-                        {!c.email && (
-                          <span className="text-[9px] font-bold uppercase text-[#C62828]">No email</span>
+
+                    {(!c.verified || c.suppressed) && (
+                      <button
+                        onClick={() => verifyContact(c)}
+                        disabled={verifyBusy === c.id}
+                        className="mt-2 w-full border-2 border-black bg-white py-1.5 text-[10px] font-black uppercase text-black hover:bg-black/5 disabled:opacity-60"
+                      >
+                        {verifyBusy === c.id
+                          ? "Sending…"
+                          : c.suppressed
+                            ? "Re-send verification"
+                            : "Send verification email"}
+                      </button>
+                    )}
+                    {verifyMsg && verifyMsg.id === c.id && (
+                      <div className="mt-2 border-2 border-amber-500 bg-amber-50 px-2 py-1.5 text-[10px] text-amber-900">
+                        {verifyMsg.text}
+                        {verifyMsg.devUrl && (
+                          <a
+                            href={verifyMsg.devUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={() => setTimeout(refreshContacts, 800)}
+                            className="mt-1 block truncate font-bold text-[#C62828] underline"
+                          >
+                            {verifyMsg.devUrl}
+                          </a>
                         )}
-                        {!c.verified && (
-                          <span className="text-[9px] font-bold uppercase text-amber-600">Unverified</span>
-                        )}
                       </div>
-                    </div>
-                    <button
-                      onClick={() => toggleActive(c)}
-                      title={c.active ? "Disable alerts" : "Enable alerts"}
-                      className={`flex h-8 shrink-0 items-center justify-center border-2 border-black px-2 text-[10px] font-black uppercase ${c.active ? "bg-green-600 text-white" : "bg-white text-black"}`}
-                    >
-                      {c.active ? "ON" : "OFF"}
-                    </button>
-                    <button
-                      onClick={() => removeContact(c.id)}
-                      className="flex h-8 w-8 shrink-0 items-center justify-center border-2 border-black bg-white text-[#C62828]"
-                    >
-                      <Trash2 size={14} />
-                    </button>
+                    )}
                   </div>
                 ))}
                 <button
@@ -352,7 +438,9 @@ function ProfilePage() {
                     onChange={(e) => setLanguage(e.target.value)}
                     className="w-full border-2 border-black bg-white px-3 py-2 text-sm font-semibold"
                   >
-                    {INDIAN_LANGUAGES.map((l) => <option key={l}>{l}</option>)}
+                    {INDIAN_LANGUAGES.map((l) => (
+                      <option key={l}>{l}</option>
+                    ))}
                   </select>
                 </div>
                 <div className="flex items-center justify-between">
@@ -361,7 +449,9 @@ function ProfilePage() {
                     onClick={() => setPush((p) => !p)}
                     className={`relative h-7 w-12 border-2 border-black ${push ? "bg-[#C62828]" : "bg-white"}`}
                   >
-                    <span className={`absolute top-0.5 h-4 w-4 border-2 border-black bg-white transition-all ${push ? "left-6" : "left-0.5"}`} />
+                    <span
+                      className={`absolute top-0.5 h-4 w-4 border-2 border-black bg-white transition-all ${push ? "left-6" : "left-0.5"}`}
+                    />
                   </button>
                 </div>
               </div>
@@ -428,32 +518,8 @@ function ProfilePage() {
                   className="w-full border-2 border-black bg-white px-3 py-2 text-sm font-semibold placeholder:text-black/30"
                 />
               </div>
-              <div className="flex gap-2">
-                <div className="w-20">
-                  <label className="mb-1 block text-[10px] font-bold uppercase">Country</label>
-                  <input
-                    value={newCountry}
-                    onChange={(e) => setNewCountry(e.target.value.toUpperCase().slice(0, 2))}
-                    placeholder="IN"
-                    className="w-full border-2 border-black bg-white px-3 py-2 text-sm font-semibold uppercase placeholder:text-black/30"
-                  />
-                </div>
-                <div className="flex-1">
-                  <label className="mb-1 block text-[10px] font-bold uppercase">Phone Number</label>
-                  <input
-                    type="tel"
-                    value={newPhone}
-                    onChange={(e) => setNewPhone(e.target.value)}
-                    placeholder="+91 98765 43210"
-                    className="w-full border-2 border-black bg-white px-3 py-2 text-sm font-semibold placeholder:text-black/30"
-                  />
-                </div>
-              </div>
-              <p className="text-[10px] text-black/50">
-                Use the country code (e.g. +91) or set the 2-letter country for local numbers.
-              </p>
               <div>
-                <label className="mb-1 block text-[10px] font-bold uppercase">Email (used for alerts)</label>
+                <label className="mb-1 block text-[10px] font-bold uppercase">Email Address</label>
                 <input
                   type="email"
                   value={newEmail}
@@ -462,11 +528,14 @@ function ProfilePage() {
                   className="w-full border-2 border-black bg-white px-3 py-2 text-sm font-semibold placeholder:text-black/30"
                 />
                 <p className="mt-1 text-[10px] text-black/50">
-                  Alerts are currently sent by email (free). Add the contact's email so they can be reached.
+                  Emergency alerts are sent to this address. They must confirm it before they can be
+                  alerted.
                 </p>
               </div>
               <div>
-                <label className="mb-1 block text-[10px] font-bold uppercase">Relationship (optional)</label>
+                <label className="mb-1 block text-[10px] font-bold uppercase">
+                  Relationship (optional)
+                </label>
                 <input
                   value={newRel}
                   onChange={(e) => setNewRel(e.target.value)}
@@ -477,9 +546,10 @@ function ProfilePage() {
               <div className="flex items-start gap-2 border-2 border-black/20 bg-black/5 px-3 py-2">
                 <ShieldCheck size={16} className="mt-0.5 shrink-0 text-black/50" />
                 <p className="text-[10px] text-black/60">
-                  This contact will receive an SMS with your name, a timestamp, your location link
-                  (if available) and an incident reference when you trigger SOS. Only add people who
-                  consent to being your emergency contact.
+                  When you trigger SOS, this contact will receive an email with your name, a
+                  timestamp, your location link (if available) and an incident reference. Only add
+                  people who consent to being your emergency contact; they must confirm their email
+                  first.
                 </p>
               </div>
             </div>

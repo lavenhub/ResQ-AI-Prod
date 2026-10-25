@@ -16,7 +16,7 @@ def test_normalizes_indian_national_to_e164():
     n = normalize_phone("98765 43210", default_region="IN")
     assert n.e164 == "+919876543210"
     assert n.country == "IN"
-    assert n.msg91_mobiles == "919876543210"
+    assert n.digits == "919876543210"
 
 
 def test_respects_explicit_country_code_over_default():

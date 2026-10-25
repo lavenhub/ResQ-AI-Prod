@@ -1,13 +1,13 @@
 """SOS endpoint + incident/notification lifecycle (authenticated, per-user).
 
-Flow (mission Phase 5):
-  authenticate -> rate-limit -> idempotency -> require eligible contacts ->
-  validate optional coords -> create persistent incident + durable notification
-  jobs in ONE transaction -> return incident id + accurate processing status.
+Flow (mission Phase 7):
+  authenticate -> rate-limit -> idempotency -> require eligible (verified)
+  contacts -> validate optional coords -> create persistent incident + durable
+  notification jobs in ONE transaction -> return incident id + accurate status.
 
-Recipients are ALWAYS resolved from the authenticated user's stored contacts —
-the request body carries no phone numbers, so this endpoint can never be used to
-blast SMS at arbitrary numbers.
+Recipients are ALWAYS resolved from the authenticated user's stored, verified
+contacts — the request body carries no addresses, so this endpoint can never be
+used to blast email at arbitrary recipients.
 """
 
 from __future__ import annotations
@@ -66,12 +66,12 @@ async def trigger_sos(
                 detail="Too many SOS requests in a short period. If this is real, call 112/108 now.",
             )
 
-    contacts = contact_service.active_contacts(session, user_ref)
+    contacts = contact_service.eligible_contacts(session, user_ref)
     if not contacts:
         raise HTTPException(
             status_code=409,
-            detail="No active emergency contacts configured. Add at least one, then retry. "
-            "If this is a real emergency, call 112/108 directly now.",
+            detail="No verified emergency contacts to alert. Add a contact and have them "
+            "confirm their email, then retry. If this is a real emergency, call 112/108 now.",
         )
 
     incident, jobs, created = incident_service.create_sos_incident(
@@ -133,10 +133,10 @@ async def cancel_incident(
     incident = incident_service.cancel_incident(session, user_ref, incident_id)
     if incident is None:
         raise HTTPException(status_code=404, detail="Incident not found")
-    # Stop pending retries for this incident's jobs.
+    # Stop not-yet-sent jobs for this incident (cannot recall already-sent email).
     for job in incident_service.jobs_for_incident(session, incident_id):
-        if job.status in (NotificationStatus.PENDING,):
-            job.status = NotificationStatus.FAILED
+        if job.status in (NotificationStatus.QUEUED, NotificationStatus.PENDING):
+            job.status = NotificationStatus.CANCELLED
             job.last_error = "incident cancelled before send"
             job.updated_at = utcnow()
             session.add(job)
@@ -164,7 +164,7 @@ async def retry_notification(
             status_code=409,
             detail=f"Notification is '{job.status.value}' and cannot be retried.",
         )
-    job.status = NotificationStatus.PENDING
+    job.status = NotificationStatus.QUEUED
     job.attempts = 0
     job.last_error = None
     job.next_attempt_at = utcnow()

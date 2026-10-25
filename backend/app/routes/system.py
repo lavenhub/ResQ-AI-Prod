@@ -6,27 +6,28 @@ from fastapi import APIRouter
 
 from .. import __version__
 from ..config import get_settings
-from ..services.sms import get_provider
+from ..services.email import get_provider
 
 router = APIRouter()
 
 
 @router.get("/health")
 async def health() -> dict:
+    """Liveness probe. NEVER sends an email — config/readiness only."""
     return {"status": "ok", "version": __version__}
 
 
-@router.get("/api/sms/health")
-async def sms_health() -> dict:
-    """Report whether the SMS provider is configured for REAL sending.
+@router.get("/api/email/health")
+async def email_health() -> dict:
+    """Report whether the email provider is configured for REAL sending.
 
-    This NEVER sends a message — it only checks configuration. ``ready`` is true
+    This NEVER sends an email — it only checks configuration. ``ready`` is true
     only when a real provider is fully configured; the mock provider reports
     ``provider: "mock"`` so no one mistakes it for live delivery.
     """
     provider = get_provider()
     problems = provider.validate_configuration()
-    is_mock = provider.name == "mock"
+    is_mock = provider.is_mock
     return {
         "provider": provider.name,
         "channel": provider.channel,

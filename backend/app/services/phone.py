@@ -29,7 +29,7 @@ class NormalizedPhone:
     e164: str          # canonical, e.g. "+919876543210"
     country: str       # ISO region, e.g. "IN"
     national: str      # national (dialled-locally) form, for display
-    msg91_mobiles: str  # digits only incl. country code, e.g. "919876543210"
+    digits: str        # digits only incl. country code, no '+', e.g. "919876543210"
 
 
 def normalize_phone(raw: str, *, default_region: str = DEFAULT_REGION) -> NormalizedPhone:
@@ -63,8 +63,8 @@ def normalize_phone(raw: str, *, default_region: str = DEFAULT_REGION) -> Normal
         e164=e164,
         country=country,
         national=national,
-        # MSG91 wants digits only, including the country code, no '+'.
-        msg91_mobiles=e164.lstrip("+"),
+        # Digits only, including the country code, no '+'.
+        digits=e164.lstrip("+"),
     )
 
 
