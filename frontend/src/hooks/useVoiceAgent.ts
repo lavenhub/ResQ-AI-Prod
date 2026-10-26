@@ -21,18 +21,6 @@ function detectIncidentType(text: string): string {
   return "Emergency";
 }
 
-/** Map incident → dispatched vehicle */
-function vehicleForIncident(incident: string): {
-  type: "ambulance" | "fire" | "police";
-  label: string;
-} {
-  const t = incident.toLowerCase();
-  if (/fire|burn|smoke|gas|explos/.test(t)) return { type: "fire", label: "🚒 Fire Brigade" };
-  if (/theft|rob|assault|attack|knife|weapon|crime|threat/.test(t))
-    return { type: "police", label: "🚔 Police Van" };
-  return { type: "ambulance", label: "🚑 Ambulance" };
-}
-
 function isEmergencyText(text: string): boolean {
   const t = text.toLowerCase();
   return /\bi am\b|\bi'm\b|\bi was\b|\bi have\b|\bhelp\b|\binjured\b|\bhurt\b|\bbleeding\b|\baccident\b|\bcrash\b|\bfire\b|\bchest pain\b|\bbreathe\b|\bfell\b|\bstuck\b|\bemergency\b|\bsnake\b|\bbit|\bpain\b|\bburn/.test(
@@ -70,11 +58,6 @@ export function useVoiceAgent() {
   const [isMuted, setIsMuted] = useState(false);
   const [medicalPassQr, setMedicalPassQr] = useState<string | null>(null);
   const [incidentType, setIncidentType] = useState<string>("Emergency");
-  const [vehicleDispatch, setVehicleDispatch] = useState<{
-    vehicleType: "ambulance" | "fire" | "police";
-    incidentType: string;
-    userCoords: { lat: number; lng: number };
-  } | null>(null);
 
   // ── refs ──────────────────────────────────────────────────────────────────
   const pcRef = useRef<RTCPeerConnection | null>(null);
@@ -82,7 +65,6 @@ export function useVoiceAgent() {
   const audioElRef = useRef<HTMLAudioElement | null>(null);
   const sessionStartRef = useRef<number>(0);
   const transcriptRef = useRef<TranscriptEntry[]>([]);
-  const dispatchedRef = useRef<boolean>(false);
   const coordsRef = useRef<{ lat: number; lng: number } | null>(null);
   const addressRef = useRef<string | null>(null);
   const incidentRef = useRef<string>("Emergency");
@@ -217,29 +199,13 @@ export function useVoiceAgent() {
       setIncidentType(inc);
       incidentRef.current = inc;
 
-      // Vehicle dispatch (once)
-      if (!dispatchedRef.current && coordsRef.current) {
-        dispatchedRef.current = true;
-        const v = vehicleForIncident(inc);
-        setVehicleDispatch({
-          vehicleType: v.type,
-          incidentType: inc,
-          userCoords: coordsRef.current,
-        });
-        // Honesty: this is a MAP SIMULATION only. ResQAI does not dispatch real
-        // vehicles, so the message must not imply one is actually coming.
-        addEntry(
-          "system",
-          `🧭 Demo: showing a simulated ${v.label} route on the map. No real vehicle has been dispatched — call 112 / 108 for real help.`,
-        );
-      }
-
-      // Contact alerting is handled by the real server-side EMAIL pipeline (see the
-      // "Alert Emergency Contacts" panel) and the voice agent's trigger_sos_alert
-      // tool — NOT by a browser-side email send (no provider creds in the bundle).
-      // We only detect the incident type here to prefill that panel.
+      // We only DETECT the incident type here, to seed the ambulance-coordination
+      // panel. Contact alerting is handled by the real server-side EMAIL pipeline
+      // and the voice agent's trigger_sos_alert tool — never a browser-side send.
+      // There is deliberately NO simulated vehicle: real ambulance progress is
+      // shown by AmbulanceCoordination from the backend call/booking state.
     },
-    [addEntry],
+    [],
   );
 
   // ── RTVI data-channel messages from the bot ─────────────────────────────────
@@ -313,10 +279,8 @@ export function useVoiceAgent() {
         setTranscript([]);
         transcriptRef.current = [];
         setMedicalPassQr(null);
-        setVehicleDispatch(null);
         setIncidentType("Emergency");
         incidentRef.current = "Emergency";
-        dispatchedRef.current = false;
         sessionStartRef.current = Date.now();
 
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -439,7 +403,6 @@ export function useVoiceAgent() {
     isMuted,
     medicalPassQr,
     incidentType,
-    vehicleDispatch,
     startSession,
     terminateSession,
     toggleMute,

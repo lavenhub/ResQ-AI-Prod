@@ -150,6 +150,16 @@ suite asserts the prompt keeps its safety invariants for every scenario family.
 | `ADVISORY_CACHE_SECONDS` | `120` | Advisory cache freshness window. |
 | `OVERPASS_URLS` | 2 mirrors | OpenStreetMap Overpass endpoints (failover). |
 | `DISASTER_ADVISORY_URL` | *(empty)* | Optional official advisory feed; empty ⇒ honest "not configured". |
+| `TELEPHONY_PROVIDER` | `mock` | `mock` (no real call) / `twilio` (real PSTN) / `exotel` (demo-unverified adapter). |
+| `TELEPHONY_ACCOUNT_SID` | *(empty)* | Twilio Account SID (or Exotel SID). Server-only secret. |
+| `TELEPHONY_AUTH_TOKEN` | *(empty)* | Twilio Auth Token (or Exotel API token). Server-only secret. |
+| `TELEPHONY_CALLER_ID` | *(empty)* | Caller ID the outbound call presents (a provider-owned number), E.164. |
+| `TELEPHONY_WEBHOOK_SECRET` | *(empty)* | Empty for Twilio (signed via Auth Token); mock/Exotel use it as a shared secret. |
+| `TELEPHONY_BASE_URL` | *(= `PUBLIC_APP_URL`)* | Public https base URL the provider calls back on (TwiML/status/media). Render URL or ngrok. |
+| `DEMO_RECEPTION_NUMBER` | *(empty)* | Team-controlled demo reception number (E.164); seeded into the directory. |
+| `AMBULANCE_MAX_CALL_SECONDS` | `300` | Hard cap per outbound call (cost guard). |
+| `AMBULANCE_MAX_CALL_ATTEMPTS` | `3` | Max call attempts per booking. |
+| `AMBULANCE_VOICE` | *(= `GEMINI_VOICE`)* | Gemini Live voice for the ambulance caller. |
 
 Secrets live only on the server (this `.env`). Nothing here is exposed to the
 browser.
@@ -180,6 +190,18 @@ browser.
 | POST | `/api/emergency/incidents/{id}/cancel` | **Auth.** False-alarm cancel; stops not-yet-sent jobs. |
 | POST | `/api/emergency/notifications/{id}/retry` | **Auth.** Re-queue a FAILED/UNKNOWN notification. |
 | POST | `/api/email/webhook` | Provider delivery-event webhook. Svix-signature auth over raw body; idempotent; `401` if forged. |
+| GET/POST | `/api/ambulance/services` | **Auth.** List / add directory entries (dial targets). Numbers returned masked. |
+| PATCH/DELETE | `/api/ambulance/services/{id}` | **Auth.** Edit / delete a service. |
+| POST | `/api/ambulance/services/{id}/verify` | **Auth.** Mark a service verified (eligible to be called). |
+| POST | `/api/ambulance/bookings` | **Auth.** Create a booking from an incident (or auto-create one). |
+| GET | `/api/ambulance/bookings/{id}` | **Auth.** Booking + live call/booking state (poll this). |
+| GET | `/api/ambulance/bookings?incident_id=` | **Auth.** List own bookings. |
+| POST | `/api/ambulance/bookings/{id}/call` | **Auth.** Place the REAL outbound call. Validates consent + number + duplicate-call. |
+| POST | `/api/ambulance/bookings/{id}/retry` | **Auth.** Retry a failed call (bounded). |
+| POST | `/api/ambulance/bookings/{id}/cancel` | **Auth.** Cancel/hang up a call. |
+| POST | `/api/ambulance/telephony/twiml/{id}` | Provider-facing. Signature-verified; returns `<Connect><Stream>` TwiML. |
+| POST | `/api/ambulance/telephony/status/{id}` | Provider-facing call-status callback; signature-verified → state machine. |
+| WS | `/api/ambulance/telephony/media/{id}` | Provider media stream; runs the Gemini Live ambulance pipeline (real provider only). |
 
 Endpoints marked **Auth** require `Authorization: Bearer <token>` (the token from
 `verify-otp`). They operate only on the caller's own data.
@@ -351,6 +373,122 @@ after explicit approval — never against real contacts by default:
    conservative first-aid guidance, and — in the DB — an incident appears
    (`GET /api/incidents`). Repeat in Hindi / Marathi.
 5. Interrupt the agent mid-sentence (barge-in) and confirm it stops and listens.
+
+---
+
+## Real outbound ambulance-coordination calls
+
+ResQAI can place a **real outbound phone call** to a configured hospital /
+ambulance reception number and have an AI (the SAME Gemini Live stack as the
+browser dispatcher) hold a live two-way conversation with whoever answers:
+introduce itself as an automated AI caller, explain the emergency using only
+verified details, ask about availability / ambulance type / ETA / charges, and
+attempt a booking. The **backend owns the booking state** — the LLM reports what
+the receptionist said; it can never mark a booking confirmed or claim a dispatch.
+
+### How it works (architecture)
+
+```
+User (Emergency screen)                 Backend                        Twilio                Reception phone
+  create booking ───────────▶ /api/ambulance/bookings
+  start call ───────────────▶ /bookings/{id}/call ──▶ provider.initiate_outbound_call ─▶ dials ───▶ 📞 rings
+                                   (reserve → state=INITIATING_CALL)         │
+  poll /bookings/{id} ◀──────  state machine ◀── /telephony/status/{id} ◀── status callbacks (ringing/answered/…)
+                                                                            │
+                              Gemini Live pipeline ◀── WS /telephony/media/{id} ◀── <Connect><Stream> (TwiML)
+                                   AmbulanceCallTools ──▶ record_receptionist_response ──▶ backend-validated state
+```
+
+The telephony bridge reuses Pipecat's `TwilioFrameSerializer` + a
+`FastAPIWebsocketTransport`, so the existing Gemini Multimodal Live pipeline runs
+over the phone call almost unchanged (`app/voice/ambulance_pipeline.py`). A
+**provider abstraction** (`app/services/telephony/`) keeps Twilio from being
+hard-coded — an Exotel adapter ships through the same interface.
+
+### Provider comparison (why Twilio for the demo)
+
+| | Twilio (demo) | Exotel |
+|---|---|---|
+| Signup | Instant, self-serve, trial credit | Business KYC (slow) |
+| India outbound PSTN | Yes (intl leg; trial caller-ID non-Indian) | Native India + Indian caller-ID/DLT |
+| Real-time bidir media | Media Streams (Pipecat's canonical path) | Voicebot streaming applet |
+| Demo safety | **Trial only calls VERIFIED numbers** — a built-in allowlist | Account-level |
+| Pipecat serializer | `TwilioFrameSerializer` ✅ | `ExotelFrameSerializer` ✅ (adapter shipped, demo-unverified) |
+
+### Twilio setup (one time)
+
+1. Create a Twilio account (free trial): <https://www.twilio.com/try-twilio>.
+2. Copy **Account SID** + **Auth Token** from the Console dashboard →
+   `TELEPHONY_ACCOUNT_SID`, `TELEPHONY_AUTH_TOKEN`.
+3. Get a voice-capable Twilio number → `TELEPHONY_CALLER_ID` (E.164).
+4. **Verify the teammate's phone** that will act as the reception desk:
+   Console → Phone Numbers → **Verified Caller IDs** → add + confirm it. On a
+   trial account Twilio will only call verified numbers — this is the built-in
+   demo safety guard.
+5. Set `DEMO_RECEPTION_NUMBER` to that verified number and
+   `TELEPHONY_PROVIDER=twilio`.
+6. Expose the backend publicly so Twilio can reach the webhooks + media socket:
+   - **Render**: set `TELEPHONY_BASE_URL=https://<your-service>.onrender.com`.
+   - **Local**: `ngrok http 8001`, then `TELEPHONY_BASE_URL=https://<id>.ngrok-free.app`.
+   No Twilio dashboard webhook config is needed — the backend passes the TwiML
+   (`/api/ambulance/telephony/twiml/{id}`), status-callback
+   (`/status/{id}`) and media (`wss …/media/{id}`) URLs per call.
+7. Seed the demo directory entry:
+   ```
+   PYTHONPATH=. .venv/Scripts/python scripts/seed_ambulance_demo.py
+   ```
+
+### Run the demonstration
+
+1. `GEMINI_API_KEY` + the Twilio vars above in `backend/.env`; backend public
+   (Render or ngrok). Start backend + frontend; sign in.
+2. (Optional) In **Profile → Ambulance / Hospital Directory**, confirm the
+   **DEMO RECEPTION NUMBER — TEAM CONTROLLED** entry is present (or add one).
+3. On **Emergency**, scroll to **Ambulance Coordination**, pick the demo
+   reception, tick the consent box, tap **Start Ambulance Coordination**.
+4. The teammate's phone rings; they answer and play the receptionist. The AI
+   opens by disclosing it's an automated ResQAI caller, explains the emergency,
+   and asks about availability / ETA / charges.
+5. The panel updates **live** from the real backend state: *Calling reception →
+   Receptionist connected → Discussing availability → Booking confirmed / declined
+   / Follow-up required*. ETA, charges and a booking reference appear **only** if
+   the teammate actually says them.
+
+### Booking state machine (backend-owned)
+
+`PREPARING_REQUEST → VALIDATING_DETAILS → INITIATING_CALL → RINGING → CONNECTED
+→ … → REQUESTING_CONFIRMATION → BOOKING_CONFIRMED | BOOKING_DECLINED | CALL_FAILED
+| CALL_DISCONNECTED | PENDING_FOLLOW_UP → COMPLETED`. Only valid transitions are
+allowed and every one is audited in `callevent`. **`BOOKING_CONFIRMED` is set by
+the backend only** when an explicit confirmation is reported *and* it qualifies
+(booking accepted or ambulance available) from an allowed state. These are kept
+distinct and never conflated: *available ≠ accepted ≠ confirmed ≠ dispatched* —
+a phone call never auto-marks a dispatch.
+
+### Safety / honesty guarantees
+
+- Only a directory number that is `active` **and** (`verified` or `is_demo`) is
+  ever dialed. Arbitrary numbers from the LLM or client are rejected.
+- Consent is required before a call shares patient details.
+- Duplicate-call prevention: a second tap while a call is in flight is refused.
+- Call retries are bounded (`AMBULANCE_MAX_CALL_ATTEMPTS`).
+- Every telephony webhook is signature-verified (Twilio `X-Twilio-Signature`);
+  forged/unsigned webhooks are rejected.
+- Booking-status emails reuse the existing outbox (no second email service) and
+  state only what the backend recorded (queued ≠ delivered; never "dispatched").
+- `TELEPHONY_PROVIDER=mock` (the default) places **no real call** — used by all
+  automated tests and offline demos.
+
+### Troubleshooting
+
+- *503 "Telephony provider not configured"* → missing Twilio creds / caller ID,
+  or `TELEPHONY_BASE_URL` is not https.
+- *Call never connects / webhooks silent* → `TELEPHONY_BASE_URL` not publicly
+  reachable; verify the ngrok/Render URL and that it's the one in `.env`.
+- *Twilio rejects the call (21210/21211)* → on trial, the destination isn't a
+  Verified Caller ID — verify the teammate's number.
+- *Answers but silence* → `GEMINI_API_KEY` missing/invalid (media socket needs
+  voice enabled), or the Twilio number isn't voice-capable.
 
 ---
 

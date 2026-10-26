@@ -18,9 +18,20 @@ from loguru import logger
 from . import __version__
 from .config import get_settings
 from .db import init_db
-from .routes import auth, contacts, email_webhook, emergency, incidents, rtc, system
+from .routes import (
+    ambulance,
+    auth,
+    contacts,
+    email_webhook,
+    emergency,
+    incidents,
+    rtc,
+    system,
+    telephony_webhook,
+)
 from .services.email import get_provider
 from .services.notifier import NotificationWorker
+from .services.telephony import get_telephony_provider
 from .voice.session import SessionManager
 
 
@@ -49,6 +60,20 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Email provider '{provider.name}' NOT ready: {'; '.join(problems)}")
     else:
         logger.info(f"Email provider '{provider.name}' ready for real sending")
+
+    # Surface telephony provider readiness at startup (actionable, never silent).
+    tele = get_telephony_provider()
+    tele_problems = tele.validate_configuration()
+    if tele.is_mock:
+        logger.warning(
+            "Telephony provider = MOCK — NO real outbound call will be placed. Set "
+            "TELEPHONY_PROVIDER=twilio (+ credentials, TELEPHONY_CALLER_ID, "
+            "TELEPHONY_BASE_URL) for real ambulance-coordination calls."
+        )
+    elif tele_problems:
+        logger.warning(f"Telephony provider '{tele.name}' NOT ready: {'; '.join(tele_problems)}")
+    else:
+        logger.info(f"Telephony provider '{tele.name}' ready for real outbound calls")
 
     # Start the background notification worker (durable outbox processor).
     app.state.notification_worker = NotificationWorker()
@@ -102,6 +127,8 @@ def create_app() -> FastAPI:
     app.include_router(emergency.router)
     app.include_router(email_webhook.router)
     app.include_router(rtc.router)
+    app.include_router(ambulance.router)
+    app.include_router(telephony_webhook.router)
     return app
 
 

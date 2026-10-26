@@ -16,12 +16,11 @@ import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { AuthGuard } from "@/components/AuthGuard";
 import { BottomNav } from "@/components/BottomNav";
+import { AmbulanceCoordination } from "@/components/AmbulanceCoordination";
 import { getIncidentStatus, listIncidents } from "@/lib/emergencyApi";
 import { useVoiceAgent } from "@/hooks/useVoiceAgent";
 import { useBottomBarClasses } from "@/hooks/useBottomBarPos";
 import { INDIAN_LANGUAGES } from "@/lib/types";
-
-type VehicleType = "ambulance" | "fire" | "police";
 
 export const Route = createFileRoute("/emergency")({
   head: () => ({
@@ -47,66 +46,24 @@ function loadLocal<T>(key: string, fallback: T): T {
 }
 
 // ─── Leaflet Emergency Map ────────────────────────────────────────────────────
-// Real interactive map with animated vehicle marker moving along actual coords.
-
-const VEHICLE_EMOJI: Record<string, string> = {
-  ambulance: "🚑",
-  fire: "🚒",
-  police: "🚔",
-};
-const VEHICLE_COLOR: Record<string, string> = {
-  ambulance: "#C62828",
-  fire: "#E65100",
-  police: "#1565C0",
-};
-const TRAVEL_MS = 45_000; // 45 seconds travel time — clearly visible slow movement
-const SPAWN_KM = 2.0; // spawn 2km away
-
-function offsetLatLng(lat: number, lng: number, bearingDeg: number, km: number) {
-  const R = 6371,
-    d = km / R,
-    b = (bearingDeg * Math.PI) / 180;
-  const φ1 = (lat * Math.PI) / 180,
-    λ1 = (lng * Math.PI) / 180;
-  const φ2 = Math.asin(Math.sin(φ1) * Math.cos(d) + Math.cos(φ1) * Math.sin(d) * Math.cos(b));
-  const λ2 =
-    λ1 +
-    Math.atan2(Math.sin(b) * Math.sin(d) * Math.cos(φ1), Math.cos(d) - Math.sin(φ1) * Math.sin(φ2));
-  return { lat: (φ2 * 180) / Math.PI, lng: (λ2 * 180) / Math.PI };
-}
-
-function lerp(a: number, b: number, t: number) {
-  return a + (b - a) * t;
-}
-function ease(p: number) {
-  return p < 0.5 ? 2 * p * p : -1 + (4 - 2 * p) * p;
-}
+// Shows ONLY the caller's real location. There is no simulated vehicle and no
+// fabricated ETA — ambulance progress is shown honestly by AmbulanceCoordination
+// from the real backend call/booking state.
 
 interface EmergencyMapProps {
   userCoords: { lat: number; lng: number };
-  vehicleType?: VehicleType;
-  incidentType?: string;
 }
 
-function EmergencyMap({ userCoords, vehicleType, incidentType }: EmergencyMapProps) {
+function EmergencyMap({ userCoords }: EmergencyMapProps) {
   const mapDivRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
-  const userMarkerRef = useRef<L.Marker | null>(null);
-  const vehicleMarkerRef = useRef<L.Marker | null>(null);
-  const polylineRef = useRef<L.Polyline | null>(null);
-  const rafRef = useRef<number | null>(null);
-  const startRef = useRef<number | null>(null);
-  const [eta, setEta] = useState<number | null>(null);
-  const [arrived, setArrived] = useState(false);
-  const spawnRef = useRef<{ lat: number; lng: number } | null>(null);
 
-  // Initialise map once
   useEffect(() => {
     if (!mapDivRef.current || mapRef.current) return;
 
     const map = L.map(mapDivRef.current, {
       center: [userCoords.lat, userCoords.lng],
-      zoom: 14,
+      zoom: 15,
       zoomControl: true,
       attributionControl: false,
     });
@@ -115,7 +72,6 @@ function EmergencyMap({ userCoords, vehicleType, incidentType }: EmergencyMapPro
       maxZoom: 19,
     }).addTo(map);
 
-    // User pin
     const userIcon = L.divIcon({
       className: "",
       html: `<div style="
@@ -134,8 +90,7 @@ function EmergencyMap({ userCoords, vehicleType, incidentType }: EmergencyMapPro
       iconAnchor: [18, 18],
     });
 
-    const userMarker = L.marker([userCoords.lat, userCoords.lng], { icon: userIcon }).addTo(map);
-    userMarkerRef.current = userMarker;
+    L.marker([userCoords.lat, userCoords.lng], { icon: userIcon }).addTo(map);
     mapRef.current = map;
 
     return () => {
@@ -144,155 +99,14 @@ function EmergencyMap({ userCoords, vehicleType, incidentType }: EmergencyMapPro
     };
   }, []); // eslint-disable-line
 
-  // Start vehicle animation when dispatched
-  useEffect(() => {
-    if (!vehicleType || !mapRef.current) return;
-
-    const map = mapRef.current;
-    const emoji = VEHICLE_EMOJI[vehicleType] ?? "🚑";
-    const color = VEHICLE_COLOR[vehicleType] ?? "#C62828";
-    const bearing = Math.floor(Math.random() * 360);
-    const spawn = offsetLatLng(userCoords.lat, userCoords.lng, bearing, SPAWN_KM);
-    spawnRef.current = spawn;
-
-    // Vehicle marker
-    const vehicleIcon = L.divIcon({
-      className: "",
-      html: `<div style="
-        font-size:32px;filter:drop-shadow(0 3px 6px rgba(0,0,0,0.5));
-        transition: transform 0.3s;
-      " id="vehicle-emoji">${emoji}</div>`,
-      iconSize: [40, 40],
-      iconAnchor: [20, 20],
-    });
-
-    if (vehicleMarkerRef.current) vehicleMarkerRef.current.remove();
-    const vehicleMarker = L.marker([spawn.lat, spawn.lng], { icon: vehicleIcon }).addTo(map);
-    vehicleMarkerRef.current = vehicleMarker;
-
-    // Dashed route line
-    if (polylineRef.current) polylineRef.current.remove();
-    const polyline = L.polyline(
-      [
-        [spawn.lat, spawn.lng],
-        [userCoords.lat, userCoords.lng],
-      ],
-      { color, dashArray: "8 6", weight: 3, opacity: 0.7 },
-    ).addTo(map);
-    polylineRef.current = polyline;
-
-    // Fit map to show both points
-    map.fitBounds(
-      L.latLngBounds([
-        [spawn.lat, spawn.lng],
-        [userCoords.lat, userCoords.lng],
-      ]),
-      { padding: [40, 40] },
-    );
-
-    setArrived(false);
-    setEta(Math.round(TRAVEL_MS / 1000));
-
-    // Use explicit start time — avoids stale ref issues
-    const startTime = performance.now();
-
-    // Animation loop
-    const animate = (ts: number) => {
-      const p = Math.min((ts - startTime) / TRAVEL_MS, 1);
-      const ep = ease(p);
-
-      const curLat = lerp(spawn.lat, userCoords.lat, ep);
-      const curLng = lerp(spawn.lng, userCoords.lng, ep);
-
-      vehicleMarker.setLatLng([curLat, curLng]);
-
-      // Update dashed line to only show remaining path
-      polyline.setLatLngs([
-        [curLat, curLng],
-        [userCoords.lat, userCoords.lng],
-      ]);
-
-      setEta(Math.max(0, Math.round(((1 - p) * TRAVEL_MS) / 1000)));
-
-      if (p < 1) {
-        rafRef.current = requestAnimationFrame(animate);
-      } else {
-        setArrived(true);
-        polyline.remove();
-        // Flash vehicle on user pin
-        vehicleMarker.setLatLng([userCoords.lat, userCoords.lng]);
-      }
-    };
-
-    if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    rafRef.current = requestAnimationFrame(animate);
-
-    return () => {
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    };
-  }, [vehicleType]); // eslint-disable-line
-
-  const color = vehicleType ? VEHICLE_COLOR[vehicleType] : "#C62828";
-  const emoji = vehicleType ? VEHICLE_EMOJI[vehicleType] : "";
-
   return (
     <div
       className="relative border-2 border-black bg-white overflow-hidden"
       style={{ height: 260 }}
     >
       <div ref={mapDivRef} className="absolute inset-0" />
-
-      {/* ETA badge — only shown when vehicle is dispatched */}
-      {vehicleType && (
-        <div
-          className="absolute top-2 left-2 z-[1000] border-2 border-white px-3 py-1.5 text-xs font-black uppercase text-white shadow-lg"
-          style={{ background: color }}
-        >
-          {arrived ? `${emoji} On Scene (demo)` : `${emoji} ${eta}s away (demo)`}
-        </div>
-      )}
-
-      {/* No GPS fallback */}
-      {!userCoords && (
-        <div className="absolute inset-0 flex items-center justify-center text-xs font-bold uppercase tracking-wider text-black/60 bg-white z-10">
-          Acquiring GPS...
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── VehicleStatusBar ─────────────────────────────────────────────────────────
-
-function VehicleStatusBar({
-  vehicleType,
-  incidentType,
-}: {
-  vehicleType: VehicleType;
-  incidentType: string;
-}) {
-  const emoji = VEHICLE_EMOJI[vehicleType] ?? "🚑";
-  const color = VEHICLE_COLOR[vehicleType] ?? "#C62828";
-  const label =
-    vehicleType === "ambulance"
-      ? "Ambulance"
-      : vehicleType === "fire"
-        ? "Fire Brigade"
-        : "Police Van";
-  return (
-    <div
-      className="flex items-center gap-3 border-2 border-black px-4 py-2"
-      style={{ background: color }}
-    >
-      <span className="text-2xl">{emoji}</span>
-      <div>
-        <div className="text-xs font-black uppercase text-white">
-          {label} — Simulated Route <span className="opacity-80">(demo)</span>
-        </div>
-        <div className="text-[10px] text-white/80">
-          {incidentType}. This is a map demo — no real {label.toLowerCase()} has been dispatched.
-          Call 112 / 108 for real help.
-        </div>
+      <div className="absolute top-2 left-2 z-[1000] border-2 border-black bg-white px-2 py-1 text-[10px] font-black uppercase">
+        Your location
       </div>
     </div>
   );
@@ -449,14 +263,8 @@ function EmergencyPage() {
           </select>
         </div>
 
-        {/* ── Leaflet Map — vehicle animates as real marker ── */}
-        {agent.coords && (
-          <EmergencyMap
-            userCoords={agent.coords}
-            vehicleType={agent.vehicleDispatch?.vehicleType}
-            incidentType={agent.vehicleDispatch?.incidentType}
-          />
-        )}
+        {/* ── Leaflet Map — caller's real location only (no simulated vehicle) ── */}
+        {agent.coords && <EmergencyMap userCoords={agent.coords} />}
         {!agent.coords && (
           <div
             className="flex items-center justify-center border-2 border-black bg-white text-xs font-bold uppercase tracking-wider text-black/60"
@@ -466,13 +274,12 @@ function EmergencyPage() {
           </div>
         )}
 
-        {/* ── Vehicle status bar ── */}
-        {agent.vehicleDispatch && (
-          <VehicleStatusBar
-            vehicleType={agent.vehicleDispatch.vehicleType}
-            incidentType={agent.vehicleDispatch.incidentType}
-          />
-        )}
+        {/* ── Ambulance coordination (REAL outbound call, backend-owned state) ── */}
+        <AmbulanceCoordination
+          coords={agent.coords}
+          address={agent.address}
+          incidentType={agent.incidentType}
+        />
 
         {/* ── Green confirmation when the dispatcher has emailed the contacts ── */}
         {alertSent && (

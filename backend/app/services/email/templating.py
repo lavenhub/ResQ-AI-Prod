@@ -207,6 +207,110 @@ def render_emergency_email(
     return RenderedEmail(subject=subject, text=text, html=html, location_included=has_loc)
 
 
+_BOOKING_KIND_INTRO = {
+    "initiated": "An ambulance-coordination call has been started.",
+    "connected": "The ambulance reception desk answered the coordination call.",
+    "confirmed": "The ambulance reception confirmed the booking.",
+    "declined": "The ambulance reception could not take the booking.",
+    "failed": "The ambulance-coordination call could not be completed.",
+}
+_BOOKING_KIND_SUBJECT = {
+    "initiated": "Ambulance coordination started",
+    "connected": "Reception contacted",
+    "confirmed": "Ambulance booking CONFIRMED",
+    "declined": "Ambulance booking declined",
+    "failed": "Ambulance call failed",
+}
+
+
+def render_booking_update_email(
+    *,
+    brand: str,
+    kind: str,
+    service_name: str | None,
+    is_demo: bool,
+    booking_state: str,
+    availability: str,
+    eta: str | None,
+    charges: str | None,
+    booking_reference: str | None,
+    patient_condition: str | None,
+    pickup_address: str | None,
+    incident_id: str,
+    when: datetime | None = None,
+) -> RenderedEmail:
+    """Render an authorized ambulance-booking status update.
+
+    Honesty rules (mission Phases 7 & 9): states only what the backend recorded;
+    ETA / charges / reference appear ONLY when actually provided; NEVER claims a
+    dispatch. A demo call is labelled as such.
+    """
+    ref = short_incident_ref(incident_id)
+    time_str = _fmt_time(when)
+    intro = _BOOKING_KIND_INTRO.get(kind, "Ambulance-coordination status update.")
+    subj_tail = _BOOKING_KIND_SUBJECT.get(kind, "Ambulance coordination update")
+    demo_tag = " (DEMONSTRATION)" if is_demo else ""
+    subject = f"{brand}{demo_tag}: {subj_tail} — ref {ref}"
+
+    # Only include facts that actually exist.
+    facts: list[tuple[str, str]] = [
+        ("Incident reference", ref),
+        ("Update time", time_str),
+        ("Status", booking_state.replace("_", " ").title()),
+    ]
+    if service_name:
+        facts.append(("Service", service_name + (" — DEMO reception number" if is_demo else "")))
+    if availability and availability != "UNKNOWN":
+        facts.append(("Ambulance availability", availability.title()))
+    if eta:
+        facts.append(("Estimated arrival", eta))
+    if charges:
+        facts.append(("Charges", charges))
+    if booking_reference:
+        facts.append(("Booking reference", booking_reference))
+    if patient_condition:
+        facts.append(("Patient condition", patient_condition))
+    if pickup_address:
+        facts.append(("Pickup", pickup_address))
+
+    # ── plain text ──────────────────────────────────────────────────────────
+    lines = [f"{brand} ambulance coordination update{demo_tag}", "", intro, ""]
+    lines += [f"- {k}: {v}" for k, v in facts]
+    lines += [
+        "",
+        f"IMPORTANT: This update reflects only what {brand} has recorded from the "
+        "coordination call. It does NOT confirm an ambulance has physically been "
+        "dispatched or arrived. For a life-threatening emergency, call 112 / 108.",
+    ]
+    text = "\n".join(lines)
+
+    # ── HTML ────────────────────────────────────────────────────────────────
+    rows = "".join(
+        f'<tr><td style="padding:2px 0;color:#555;width:42%;">{escape(k)}</td>'
+        f'<td style="padding:2px 0;font-weight:bold;">{escape(v)}</td></tr>'
+        for k, v in facts
+    )
+    inner = (
+        f'<div style="background:{_RED};padding:16px 20px;">'
+        f'<span style="color:#ffffff;font:bold 18px Arial,sans-serif;letter-spacing:1px;">'
+        f"{escape(brand)} AMBULANCE UPDATE{escape(demo_tag)}</span></div>"
+        '<div style="padding:20px;font:400 14px/1.6 Arial,sans-serif;color:#111;">'
+        f'<p style="margin:0 0 12px;font-size:16px;">{escape(intro)}</p>'
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+        'style="font:400 13px/1.5 Arial,sans-serif;border-top:1px solid #eee;'
+        'border-bottom:1px solid #eee;padding:8px 0;margin:8px 0;">'
+        f"{rows}</table>"
+        f'<p style="margin:16px 0 0;padding:10px 12px;background:#f5f5f5;'
+        f'border:1px solid #ddd;color:#555;font-size:12px;">This update reflects only '
+        f"what {escape(brand)} recorded from the coordination call. It does "
+        "<strong>not</strong> confirm an ambulance has been dispatched or arrived. "
+        "For a life-threatening emergency, call <strong>112 / 108</strong>.</p>"
+        "</div>"
+    )
+    html = _shell(inner, preheader=f"{subj_tail} — incident {ref}")
+    return RenderedEmail(subject=subject, text=text, html=html, location_included=bool(pickup_address))
+
+
 def render_verification_email(
     *,
     brand: str,

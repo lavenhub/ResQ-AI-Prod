@@ -231,6 +231,66 @@ class Settings:
         default_factory=lambda: _get_int("CONTACTS_RATE_WINDOW_SECONDS", 60)
     )
 
+    # ── Telephony (real outbound ambulance-coordination calls) ────────────
+    # Which provider implementation the telephony abstraction uses:
+    #   "mock"   — dev/tests ONLY; simulates a call lifecycle, never dials PSTN.
+    #   "twilio" — real outbound PSTN via Twilio Programmable Voice + Media Streams.
+    #   "exotel" — real outbound PSTN via Exotel (India-native); adapter shipped
+    #              but demo-unverified (see services/telephony/exotel_provider.py).
+    # A provider abstraction (app/services/telephony) keeps the provider from
+    # being hard-coded, so another can be added without touching the pipeline.
+    telephony_provider: str = field(
+        default_factory=lambda: _get("TELEPHONY_PROVIDER", "mock")
+    )
+    # Server-only account identity + secret. Twilio: Account SID ("AC...") +
+    # Auth Token. NEVER sent to the frontend. Absent => provider reports "not
+    # configured" (we never fake a real call). ``telephony_api_key`` /
+    # ``telephony_api_secret`` are generic aliases Exotel uses.
+    telephony_account_sid: str = field(
+        default_factory=lambda: _get("TELEPHONY_ACCOUNT_SID") or _get("TELEPHONY_API_KEY")
+    )
+    telephony_auth_token: str = field(
+        default_factory=lambda: _get("TELEPHONY_AUTH_TOKEN") or _get("TELEPHONY_API_SECRET")
+    )
+    # The caller ID / "from" number the outbound call presents. For Twilio this
+    # MUST be a Twilio number you own (or a verified caller ID). E.164 format.
+    telephony_caller_id: str = field(default_factory=lambda: _get("TELEPHONY_CALLER_ID"))
+    # Optional dedicated webhook signing secret. Twilio signs status callbacks
+    # with the Auth Token (X-Twilio-Signature), so this is usually left empty for
+    # Twilio and we verify with the Auth Token; kept for provider-abstraction
+    # parity and for providers that use a separate secret.
+    telephony_webhook_secret: str = field(
+        default_factory=lambda: _get("TELEPHONY_WEBHOOK_SECRET")
+    )
+    # The externally-reachable PUBLIC base URL of THIS backend, used to build the
+    # TwiML, status-callback and media-stream (wss) URLs the provider calls back
+    # on. MUST be https/wss and publicly reachable (Render, or ngrok locally).
+    # Empty => falls back to PUBLIC_APP_URL. The media WebSocket URL is derived by
+    # switching the scheme to ws/wss.
+    telephony_base_url: str = field(
+        default_factory=lambda: _get("TELEPHONY_BASE_URL") or _get("PUBLIC_APP_URL", "http://localhost:8001")
+    )
+    # The single demonstration reception number dialed for the demo — a REAL
+    # number controlled by the team. The seed script labels its directory entry
+    # "DEMO RECEPTION NUMBER — TEAM CONTROLLED". E.164 format, e.g. +919812345678.
+    demo_reception_number: str = field(
+        default_factory=lambda: _get("DEMO_RECEPTION_NUMBER")
+    )
+    # Hard cap on a single outbound call's length (seconds) — cost/abuse guard,
+    # mirrors MAX_SESSION_SECONDS for the browser dispatcher.
+    ambulance_max_call_seconds: int = field(
+        default_factory=lambda: _get_int("AMBULANCE_MAX_CALL_SECONDS", 300)
+    )
+    # Max outbound-call attempts per booking before it must be handled manually.
+    ambulance_max_call_attempts: int = field(
+        default_factory=lambda: _get_int("AMBULANCE_MAX_CALL_ATTEMPTS", 3)
+    )
+    # Gemini Live voice used specifically for the outbound ambulance caller.
+    # Defaults to the dispatcher voice when unset.
+    ambulance_voice: str = field(
+        default_factory=lambda: _get("AMBULANCE_VOICE") or _get("GEMINI_VOICE", "Puck")
+    )
+
     # ── Misc ──────────────────────────────────────────────────────────────
     log_level: str = field(default_factory=lambda: _get("LOG_LEVEL", "INFO"))
     # Persist raw transcripts to the incident record? Off by default for privacy
@@ -243,6 +303,20 @@ class Settings:
     def voice_enabled(self) -> bool:
         """True only when a real AI provider key is configured."""
         return bool(self.gemini_api_key)
+
+    @property
+    def telephony_is_mock(self) -> bool:
+        return (self.telephony_provider or "mock").strip().lower() == "mock"
+
+    def media_ws_base(self) -> str:
+        """The ws/wss base for the media-stream WebSocket, derived from the
+        public HTTP base URL (http->ws, https->wss)."""
+        base = (self.telephony_base_url or "").rstrip("/")
+        if base.startswith("https://"):
+            return "wss://" + base[len("https://"):]
+        if base.startswith("http://"):
+            return "ws://" + base[len("http://"):]
+        return base
 
 
 @lru_cache
