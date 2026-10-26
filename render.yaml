@@ -1,0 +1,55 @@
+# Render Blueprint for the ResQAI backend (FastAPI + Pipecat + Gemini Live).
+#
+# Deploy: Render Dashboard → New + → Blueprint → connect this repo. Render reads
+# this file, creates the web service, and PROMPTS you for every `sync: false`
+# secret (so nothing sensitive is stored in this public repo). After the first
+# deploy, set TELEPHONY_BASE_URL + PUBLIC_APP_URL to the service's own https URL
+# and CORS_ORIGINS to your Vercel frontend URL, then redeploy.
+services:
+  - type: web
+    name: resqai-backend
+    runtime: python
+    rootDir: backend
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      # Pipecat is pinned to Python 3.11.
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      # Signed-session secret — Render auto-generates a strong value.
+      - key: AUTH_SECRET
+        generateValue: true
+      # SQLite on the instance disk (ephemeral; fine for a demo).
+      - key: DATABASE_URL
+        value: sqlite:///./resqai.db
+      # ── Secrets / per-deploy values: Render prompts for these ──
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: TELEPHONY_PROVIDER
+        value: twilio
+      - key: TELEPHONY_ACCOUNT_SID
+        sync: false
+      - key: TELEPHONY_AUTH_TOKEN
+        sync: false
+      - key: TELEPHONY_CALLER_ID
+        sync: false
+      - key: DEMO_RECEPTION_NUMBER
+        sync: false
+      # Set to this service's OWN https URL after the first deploy
+      # (e.g. https://resqai-backend.onrender.com).
+      - key: TELEPHONY_BASE_URL
+        sync: false
+      - key: PUBLIC_APP_URL
+        sync: false
+      # Comma-separated allowed origins — set to your Vercel frontend URL.
+      - key: CORS_ORIGINS
+        sync: false
+      # ── Optional: emergency EMAIL (leave unset to skip) ──
+      - key: EMAIL_PROVIDER
+        value: mock
+      - key: EMAIL_API_KEY
+        sync: false
+      - key: EMAIL_FROM_ADDRESS
+        sync: false
