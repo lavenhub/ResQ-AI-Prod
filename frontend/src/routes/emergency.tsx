@@ -2,6 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import {
   AlertCircle,
+  CheckCircle2,
   Copy,
   Mic,
   MicOff,
@@ -15,7 +16,7 @@ import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { AuthGuard } from "@/components/AuthGuard";
 import { BottomNav } from "@/components/BottomNav";
-import SosAlertPanel from "@/components/SosAlertPanel";
+import { getIncidentStatus, listIncidents } from "@/lib/emergencyApi";
 import { useVoiceAgent } from "@/hooks/useVoiceAgent";
 import { useBottomBarClasses } from "@/hooks/useBottomBarPos";
 import { INDIAN_LANGUAGES } from "@/lib/types";
@@ -315,6 +316,13 @@ function EmergencyPage() {
   const [textInput, setTextInput] = useState("");
   const transcriptDivRef = useRef<HTMLDivElement>(null);
 
+  // Green "notifications sent" confirmation — shown once the dispatcher has
+  // emailed the caller's contacts during a live call (detected by polling the
+  // signed-in user's incidents for one created this call that has notifications).
+  const [alertSent, setAlertSent] = useState<{ count: number } | null>(null);
+  const baselineIncidentRef = useRef<string | null>(null);
+  const baselineSetRef = useRef(false);
+
   const name = loadLocal("resq_name", "");
   const blood = loadLocal("resq_blood", "—");
   const age = loadLocal<number>("resq_age", 0);
@@ -331,6 +339,64 @@ function EmergencyPage() {
     agent.status === "listening" || agent.status === "thinking" || agent.status === "speaking";
   const active = inCall; // header / pill styling
   const phase = agent.status;
+
+  // Detect when the dispatcher has emailed the caller's contacts during this call.
+  useEffect(() => {
+    if (!inCall) {
+      // Reset so the NEXT call re-baselines (keep the banner visible after this one).
+      baselineSetRef.current = false;
+      baselineIncidentRef.current = null;
+      return;
+    }
+    let cancelled = false;
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const SENTISH = ["queued", "processing", "accepted_by_provider", "delivered", "deferred"];
+
+    const run = async () => {
+      // Capture the latest incident id BEFORE this call, once.
+      if (!baselineSetRef.current) {
+        try {
+          const list = await listIncidents(1);
+          baselineIncidentRef.current = list[0]?.id ?? null;
+        } catch {
+          baselineIncidentRef.current = null;
+        }
+        baselineSetRef.current = true;
+        setAlertSent(null); // fresh call
+      }
+      const tick = async () => {
+        if (cancelled) return;
+        try {
+          const list = await listIncidents(5);
+          const fresh: string[] = [];
+          for (const inc of list) {
+            if (inc.id === baselineIncidentRef.current) break;
+            fresh.push(inc.id);
+          }
+          for (const id of fresh) {
+            const st = await getIncidentStatus(id);
+            if (
+              st.notification_summary.total > 0 &&
+              st.notifications.some((n) => SENTISH.includes(n.status))
+            ) {
+              if (!cancelled) setAlertSent({ count: st.notification_summary.total });
+              if (timer) clearInterval(timer);
+              return;
+            }
+          }
+        } catch {
+          /* ignore transient poll errors */
+        }
+      };
+      await tick();
+      timer = setInterval(tick, 3000);
+    };
+    run();
+    return () => {
+      cancelled = true;
+      if (timer) clearInterval(timer);
+    };
+  }, [inCall]);
 
   const phaseLabel =
     phase === "speaking"
@@ -408,14 +474,20 @@ function EmergencyPage() {
           />
         )}
 
-        {/* ── Real email alert to saved contacts (backend pipeline) ── */}
-        <SosAlertPanel
-          coords={agent.coords}
-          address={agent.address}
-          accuracy={agent.gpsAccuracy}
-          incidentType={agent.incidentType !== "Emergency" ? agent.incidentType : undefined}
-          victimName={name || undefined}
-        />
+        {/* ── Green confirmation when the dispatcher has emailed the contacts ── */}
+        {alertSent && (
+          <div className="flex items-start gap-2 border-2 border-green-600 bg-green-50 px-3 py-3 text-green-800">
+            <CheckCircle2 size={18} className="mt-0.5 shrink-0" />
+            <div className="text-xs font-bold uppercase tracking-wide">
+              Notifications sent to the emergency emails
+              {alertSent.count > 0 && (
+                <span className="ml-1 font-normal normal-case text-green-700">
+                  ({alertSent.count} contact{alertSent.count === 1 ? "" : "s"})
+                </span>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* ── Dispatcher control ── */}
         <div className="border-2 border-black bg-white p-4">

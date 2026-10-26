@@ -28,6 +28,8 @@ async def email_health() -> dict:
     provider = get_provider()
     problems = provider.validate_configuration()
     is_mock = provider.is_mock
+    # Delivery receipts (webhook) are separate from send readiness.
+    delivery_receipts = bool(getattr(provider, "delivery_receipts_configured", False))
     return {
         "provider": provider.name,
         "channel": provider.channel,
@@ -35,6 +37,7 @@ async def email_health() -> dict:
         "isMock": is_mock,
         "problems": problems,
         "realSendingConfigured": (not is_mock) and (not problems),
+        "deliveryReceiptsConfigured": delivery_receipts,
     }
 
 

@@ -122,6 +122,16 @@ export const triggerSos = (body: {
 export const getIncidentStatus = (id: string) =>
   apiFetch<SosResponse>(`/api/emergency/incidents/${id}`);
 
+export interface IncidentListItem {
+  id: string;
+  status: string;
+  trigger_source: string;
+  created_at: string;
+}
+
+export const listIncidents = (limit = 1) =>
+  apiFetch<IncidentListItem[]>(`/api/emergency/incidents?limit=${limit}`);
+
 export const retryNotification = (id: string) =>
   apiFetch<NotificationRead>(`/api/emergency/notifications/${id}/retry`, { method: "POST" });
 

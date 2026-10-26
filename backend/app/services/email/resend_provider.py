@@ -68,22 +68,26 @@ class ResendEmailProvider(EmailProvider):
 
     # ── configuration ───────────────────────────────────────────────────────
     def validate_configuration(self) -> list[str]:
+        # Only SEND-blocking problems belong here. A missing webhook secret does
+        # not block sending — it only disables inbound delivery receipts — so it
+        # is reported separately via ``delivery_receipts_configured``.
         problems: list[str] = []
         if not self._api_key:
             problems.append("EMAIL_API_KEY is not set")
         if not self._from_address:
             problems.append("EMAIL_FROM_ADDRESS is not set")
-        if not self._webhook_secret:
-            problems.append(
-                "EMAIL_WEBHOOK_SECRET is not set (delivery-event webhooks would be rejected)"
-            )
         return problems
+
+    @property
+    def delivery_receipts_configured(self) -> bool:
+        """True when the webhook secret is set, so delivered/bounce events can be
+        verified and applied. Independent of send readiness."""
+        return bool(self._webhook_secret)
 
     # ── send ─────────────────────────────────────────────────────────────────
     async def send(self, msg: OutboundEmail) -> SendResult:
-        # Missing credentials are a PERMANENT failure (retrying won't help). A
-        # missing webhook secret must NOT block sending — it only affects receipts.
-        blocking = [p for p in self.validate_configuration() if "EMAIL_WEBHOOK_SECRET" not in p]
+        # Missing credentials are a PERMANENT failure (retrying won't help).
+        blocking = self.validate_configuration()
         if blocking:
             return SendResult(
                 SendOutcome.PERMANENT, detail=f"provider not configured: {'; '.join(blocking)}"

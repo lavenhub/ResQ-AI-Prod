@@ -350,11 +350,12 @@ def build_tools_schema() -> ToolsSchema:
             FunctionSchema(
                 name="trigger_sos_alert",
                 description="Send an emergency EMAIL to the caller's OWN saved, verified "
-                "emergency contacts. ONLY call this AFTER the caller clearly confirms they "
-                "want their contacts alerted (ask first). You never provide email addresses "
-                "— they come from the caller's saved contacts. Safe to call once; it will "
-                "not double-send. Returns whether alerts were QUEUED (not proof of "
-                "delivery).",
+                "emergency contacts. Call this ONCE, automatically, as soon as you are "
+                "confident this is a genuine emergency and have recorded the incident — you "
+                "do NOT need to ask permission first, but tell the caller you're notifying "
+                "their contacts. You never provide email addresses — they come from the "
+                "caller's saved contacts. Safe to call once; it will not double-send. "
+                "Returns whether alerts were QUEUED (not proof of delivery).",
                 properties={
                     "incident_type": {
                         "type": "string",
