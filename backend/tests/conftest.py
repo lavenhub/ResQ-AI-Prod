@@ -40,6 +40,14 @@ os.environ["TELEPHONY_PROVIDER"] = "mock"
 os.environ["TELEPHONY_WEBHOOK_SECRET"] = "test-telephony-secret"
 os.environ["TELEPHONY_CALLER_ID"] = "+911140000000"
 os.environ["AMBULANCE_MAX_CALL_ATTEMPTS"] = "3"
+# Force telephony creds EMPTY so a local backend/.env (which may hold real or
+# placeholder Twilio values) cannot bleed into tests via config's load_dotenv()
+# (which only fills vars that are ABSENT) — same guard as GEMINI_API_KEY above.
+os.environ["TELEPHONY_ACCOUNT_SID"] = ""
+os.environ["TELEPHONY_AUTH_TOKEN"] = ""
+os.environ["TELEPHONY_API_KEY"] = ""
+os.environ["TELEPHONY_API_SECRET"] = ""
+os.environ["TELEPHONY_BASE_URL"] = ""
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

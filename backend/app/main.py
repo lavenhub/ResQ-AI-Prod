@@ -20,6 +20,7 @@ from .config import get_settings
 from .db import init_db
 from .routes import (
     ambulance,
+    ambulance_reception,
     auth,
     contacts,
     email_webhook,
@@ -129,6 +130,7 @@ def create_app() -> FastAPI:
     app.include_router(rtc.router)
     app.include_router(ambulance.router)
     app.include_router(telephony_webhook.router)
+    app.include_router(ambulance_reception.router)
     return app
 
 

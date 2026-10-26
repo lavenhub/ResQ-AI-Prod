@@ -9,6 +9,7 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as ReceptionRouteImport } from './routes/reception'
 import { Route as ProfileRouteImport } from './routes/profile'
 import { Route as MedicalPassRouteImport } from './routes/medical-pass'
 import { Route as LandingRouteImport } from './routes/landing'
@@ -18,6 +19,11 @@ import { Route as EmergencyRouteImport } from './routes/emergency'
 import { Route as AuthRouteImport } from './routes/auth'
 import { Route as IndexRouteImport } from './routes/index'
 
+const ReceptionRoute = ReceptionRouteImport.update({
+  id: '/reception',
+  path: '/reception',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ProfileRoute = ProfileRouteImport.update({
   id: '/profile',
   path: '/profile',
@@ -68,6 +74,7 @@ export interface FileRoutesByFullPath {
   '/landing': typeof LandingRoute
   '/medical-pass': typeof MedicalPassRoute
   '/profile': typeof ProfileRoute
+  '/reception': typeof ReceptionRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -78,6 +85,7 @@ export interface FileRoutesByTo {
   '/landing': typeof LandingRoute
   '/medical-pass': typeof MedicalPassRoute
   '/profile': typeof ProfileRoute
+  '/reception': typeof ReceptionRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -89,6 +97,7 @@ export interface FileRoutesById {
   '/landing': typeof LandingRoute
   '/medical-pass': typeof MedicalPassRoute
   '/profile': typeof ProfileRoute
+  '/reception': typeof ReceptionRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -101,6 +110,7 @@ export interface FileRouteTypes {
     | '/landing'
     | '/medical-pass'
     | '/profile'
+    | '/reception'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -111,6 +121,7 @@ export interface FileRouteTypes {
     | '/landing'
     | '/medical-pass'
     | '/profile'
+    | '/reception'
   id:
     | '__root__'
     | '/'
@@ -121,6 +132,7 @@ export interface FileRouteTypes {
     | '/landing'
     | '/medical-pass'
     | '/profile'
+    | '/reception'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -132,10 +144,18 @@ export interface RootRouteChildren {
   LandingRoute: typeof LandingRoute
   MedicalPassRoute: typeof MedicalPassRoute
   ProfileRoute: typeof ProfileRoute
+  ReceptionRoute: typeof ReceptionRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/reception': {
+      id: '/reception'
+      path: '/reception'
+      fullPath: '/reception'
+      preLoaderRoute: typeof ReceptionRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/profile': {
       id: '/profile'
       path: '/profile'
@@ -204,6 +224,7 @@ const rootRouteChildren: RootRouteChildren = {
   LandingRoute: LandingRoute,
   MedicalPassRoute: MedicalPassRoute,
   ProfileRoute: ProfileRoute,
+  ReceptionRoute: ReceptionRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Ambulance, CheckCircle2, Phone, PhoneOff, RefreshCw, XCircle } from "lucide-react";
+import { Ambulance, CheckCircle2, Copy, Phone, PhoneOff, RefreshCw, XCircle } from "lucide-react";
 import {
   type AmbulanceServiceItem,
   type Booking,
@@ -10,6 +10,7 @@ import {
   isRetryable,
   listServices,
   placeCall,
+  receptionUrl,
   retryCall,
 } from "@/lib/ambulanceApi";
 
@@ -135,6 +136,10 @@ export function AmbulanceCoordination({ coords, address, incidentType }: Props) 
   const declined = state === "BOOKING_DECLINED";
   const failed = state === "CALL_FAILED" || state === "CALL_DISCONNECTED";
   const live = booking && isInFlight(booking.booking_state);
+  // WebRTC (free) mode: before the receptionist has joined, show a link to share.
+  const isWebrtc = booking?.provider === "webrtc";
+  const awaitingReceptionist =
+    isWebrtc && booking != null && booking.call_connected_at == null && !!live;
 
   return (
     <div className="border-2 border-black bg-white p-4">
@@ -240,17 +245,48 @@ export function AmbulanceCoordination({ coords, address, incidentType }: Props) 
           {/* Target */}
           <div className="border-2 border-black/20 bg-black/5 px-3 py-2 text-[11px]">
             <div className="flex justify-between">
-              <span className="font-bold uppercase text-black/60">Calling</span>
+              <span className="font-bold uppercase text-black/60">
+                {isWebrtc ? "Reception" : "Calling"}
+              </span>
               <span className="font-black">
                 {booking.service_name}
                 {booking.service_is_demo ? " (DEMO)" : ""}
               </span>
             </div>
-            <div className="flex justify-between">
-              <span className="font-bold uppercase text-black/60">Number</span>
-              <span className="font-mono">{booking.service_phone_masked}</span>
-            </div>
+            {!isWebrtc && (
+              <div className="flex justify-between">
+                <span className="font-bold uppercase text-black/60">Number</span>
+                <span className="font-mono">{booking.service_phone_masked}</span>
+              </div>
+            )}
           </div>
+
+          {/* WebRTC: share this link with the teammate playing reception */}
+          {awaitingReceptionist && (
+            <div className="border-2 border-amber-500 bg-amber-50 px-3 py-2">
+              <div className="mb-1 text-[10px] font-black uppercase text-amber-800">
+                Waiting for the receptionist to answer
+              </div>
+              <p className="mb-2 text-[11px] text-amber-900">
+                Open this link on the teammate's device (the “hospital reception”) and tap
+                Answer:
+              </p>
+              <div className="flex items-center gap-1">
+                <input
+                  readOnly
+                  value={receptionUrl(booking.id)}
+                  className="flex-1 truncate border-2 border-black bg-white px-2 py-1 font-mono text-[10px]"
+                />
+                <button
+                  onClick={() => navigator.clipboard?.writeText(receptionUrl(booking.id))}
+                  className="flex h-7 w-7 items-center justify-center border-2 border-black bg-black text-white"
+                  title="Copy link"
+                >
+                  <Copy size={12} />
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Availability — only when the receptionist actually said something */}
           {booking.availability !== "UNKNOWN" && (

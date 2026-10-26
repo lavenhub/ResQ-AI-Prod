@@ -27,20 +27,12 @@ services:
       # ── Secrets / per-deploy values: Render prompts for these ──
       - key: GEMINI_API_KEY
         sync: false
+      # Call mode. "webrtc" = FREE: the receptionist answers from their browser,
+      # no phone carrier, no cost. (Switch to "twilio" for real PSTN calls and add
+      # the TELEPHONY_ACCOUNT_SID/AUTH_TOKEN/CALLER_ID + DEMO_RECEPTION_NUMBER vars.)
       - key: TELEPHONY_PROVIDER
-        value: twilio
-      - key: TELEPHONY_ACCOUNT_SID
-        sync: false
-      - key: TELEPHONY_AUTH_TOKEN
-        sync: false
-      - key: TELEPHONY_CALLER_ID
-        sync: false
-      - key: DEMO_RECEPTION_NUMBER
-        sync: false
-      # Set to this service's OWN https URL after the first deploy
-      # (e.g. https://resqai-backend.onrender.com).
-      - key: TELEPHONY_BASE_URL
-        sync: false
+        value: webrtc
+      # Public https URL of THIS service (e.g. https://resqai-backend.onrender.com).
       - key: PUBLIC_APP_URL
         sync: false
       # Comma-separated allowed origins — set to your Vercel frontend URL.

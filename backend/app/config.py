@@ -291,6 +291,19 @@ class Settings:
         default_factory=lambda: _get("AMBULANCE_VOICE") or _get("GEMINI_VOICE", "Puck")
     )
 
+    # ── WebRTC ICE / TURN (for the browser voice + reception calls) ───────
+    # STUN is enough for local / same-network demos. For a CLOUD deploy (e.g.
+    # Render) where the server sits behind a proxy that blocks WebRTC's UDP,
+    # a TURN relay is needed or the call connects but has NO audio. Set
+    # TURN_URLS (+ TURN_USERNAME / TURN_CREDENTIAL) to a TURN server — several
+    # providers (e.g. metered.ca) have a free tier. Default: STUN only.
+    stun_urls: list[str] = field(
+        default_factory=lambda: _get_list("STUN_URLS", ["stun:stun.l.google.com:19302"])
+    )
+    turn_urls: list[str] = field(default_factory=lambda: _get_list("TURN_URLS", []))
+    turn_username: str = field(default_factory=lambda: _get("TURN_USERNAME"))
+    turn_credential: str = field(default_factory=lambda: _get("TURN_CREDENTIAL"))
+
     # ── Misc ──────────────────────────────────────────────────────────────
     log_level: str = field(default_factory=lambda: _get("LOG_LEVEL", "INFO"))
     # Persist raw transcripts to the incident record? Off by default for privacy

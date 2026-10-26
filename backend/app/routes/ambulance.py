@@ -253,6 +253,11 @@ async def place_call(
     booking = ambulance_service.attach_provider_call(
         session, booking, provider=result.provider, provider_call_id=result.provider_call_id,
     )
+    # Apply the provider's reported status (e.g. WebRTC reports RINGING at once,
+    # since it waits for the receptionist to join; Twilio stays INITIATING until
+    # its first status webhook).
+    if result.status and result.status != CallStatus.INITIATING:
+        booking = ambulance_service.apply_call_status(session, booking, result.status)
     ambulance_service.enqueue_booking_update(session, booking, "initiated")
     logger.info(
         f"[ambulance] call placed for booking {booking.id} -> {mask_phone(to_number)} "

@@ -7,8 +7,18 @@ from fastapi import APIRouter
 from .. import __version__
 from ..config import get_settings
 from ..services.email import get_provider
+from ..webrtc_ice import ice_servers_client
 
 router = APIRouter()
+
+
+@router.get("/api/ice")
+async def ice() -> dict:
+    """ICE servers (STUN, and TURN if configured) for the browser's WebRTC peer.
+
+    TURN credentials are meant to be client-visible — that is how WebRTC relays
+    work — so serving them here is expected, not a secret leak."""
+    return {"iceServers": ice_servers_client()}
 
 
 @router.get("/health")

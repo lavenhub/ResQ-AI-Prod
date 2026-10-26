@@ -89,6 +89,7 @@ export interface Booking {
   charges_text: string | null;
   booking_reference: string | null;
   situation_code: string | null;
+  provider: string | null;
   attempts: number;
   last_error: string | null;
   call_initiated_at: string | null;
@@ -170,6 +171,29 @@ export const retryCall = (id: string) =>
 
 export const cancelCall = (id: string) =>
   apiFetch<Booking>(`/api/ambulance/bookings/${id}/cancel`, { method: "POST" });
+
+// ── WebRTC reception (free, no-PSTN path) ───────────────────────────────────────
+export interface ReceptionBookingInfo {
+  booking_id: string;
+  service_name: string | null;
+  is_demo: boolean;
+  emergency_type: string | null;
+  patient_condition: string | null;
+  num_patients: number;
+  pickup_address: string | null;
+  call_status: CallStatus;
+  booking_state: BookingState;
+  answerable: boolean;
+}
+
+// Unauthenticated: the receptionist (teammate) need not be logged in; the booking
+// id is the capability.
+export const receptionBookingInfo = (bookingId: string) =>
+  apiFetch<ReceptionBookingInfo>(`/api/ambulance/reception/booking/${bookingId}`);
+
+/** The link the caller shares with the teammate to answer the call. */
+export const receptionUrl = (bookingId: string) =>
+  `${typeof window !== "undefined" ? window.location.origin : ""}/reception?booking=${bookingId}`;
 
 // ── Honest, user-facing status mapping ─────────────────────────────────────────
 // The label says only what the backend has recorded — never a fabricated ETA or

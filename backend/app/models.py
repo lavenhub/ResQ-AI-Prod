@@ -789,6 +789,7 @@ class BookingRead(BaseModel):
     charges_text: str | None
     booking_reference: str | None
     situation_code: str | None
+    provider: str | None
     attempts: int
     last_error: str | None
     call_initiated_at: datetime | None

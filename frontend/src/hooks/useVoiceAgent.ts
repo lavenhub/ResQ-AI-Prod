@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import QRCode from "qrcode";
-import { apiUrl, authHeader } from "@/lib/api";
+import { apiUrl, authHeader, getIceServers } from "@/lib/api";
 import type { TranscriptEntry, VoiceStatus } from "@/lib/types";
 
 function uid() {
@@ -288,9 +288,7 @@ export function useVoiceAgent() {
         });
         micStreamRef.current = stream;
 
-        const pc = new RTCPeerConnection({
-          iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-        });
+        const pc = new RTCPeerConnection({ iceServers: await getIceServers() });
         pcRef.current = pc;
 
         // Data channel for RTVI messages (transcripts, speaking state)

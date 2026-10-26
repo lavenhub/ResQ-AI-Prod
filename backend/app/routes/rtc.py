@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from ..auth import get_optional_user
 from ..config import get_settings
 from ..voice.pipeline import run_voice_bot
+from ..webrtc_ice import ice_servers_aiortc
 
 try:
     from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
@@ -27,8 +28,6 @@ except Exception as e:  # pragma: no cover - only if deps missing
     _WEBRTC_IMPORT_ERROR = str(e)
 
 router = APIRouter(prefix="/api/rtc")
-
-_STUN = ["stun:stun.l.google.com:19302"]
 
 
 class OfferRequest(BaseModel):
@@ -65,7 +64,7 @@ async def offer(
     manager = request.app.state.session_manager
     tasks: set[asyncio.Task] = request.app.state.voice_tasks
 
-    connection = SmallWebRTCConnection(ice_servers=_STUN)
+    connection = SmallWebRTCConnection(ice_servers=ice_servers_aiortc())
     await connection.initialize(sdp=body.sdp, type=body.type)
     session_id = getattr(connection, "pc_id", None) or getattr(connection, "id", None) or "sess"
 

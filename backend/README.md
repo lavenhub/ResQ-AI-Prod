@@ -403,7 +403,39 @@ The telephony bridge reuses Pipecat's `TwilioFrameSerializer` + a
 `FastAPIWebsocketTransport`, so the existing Gemini Multimodal Live pipeline runs
 over the phone call almost unchanged (`app/voice/ambulance_pipeline.py`). A
 **provider abstraction** (`app/services/telephony/`) keeps Twilio from being
-hard-coded — an Exotel adapter ships through the same interface.
+hard-coded — an Exotel adapter and a **free WebRTC** mode ship through the same
+interface.
+
+### FREE mode — WebRTC reception (no carrier, no account, $0) — DEFAULT
+
+If you don't want a telephony account, set `TELEPHONY_PROVIDER=webrtc` (the
+default). Instead of dialing a phone number, the teammate acting as reception
+opens a **browser page and answers** — the AI coordinator talks to them live over
+WebRTC (the same transport as the in-app dispatcher). It's a real two-way AI voice
+conversation, driven by the same booking state machine; it just isn't over the
+phone network. Needs only `GEMINI_API_KEY`.
+
+Flow:
+1. Caller taps **Start Ambulance Coordination** → booking goes **RINGING** and the
+   UI shows a **reception link** (`/reception?booking=<id>`) to share with the teammate.
+2. Teammate opens the link, sees the incoming emergency details, taps **Answer**,
+   allows the mic. (`POST /api/ambulance/reception/offer` runs the pipeline over
+   `SmallWebRTCTransport`.)
+3. On connect → **CONNECTED**; the AI opens, coordinates, and records the outcome
+   through the same backend-owned state machine. The caller screen updates live.
+
+**WebRTC networking (important for cloud):** WebRTC media needs UDP. On a local
+network STUN is enough (default). On a cloud host (Render) that blocks WebRTC's
+UDP, set a **TURN** relay or the call connects with **no audio** — free TURN tiers
+exist (e.g. metered.ca):
+```
+TURN_URLS=turn:your-turn-host:3478
+TURN_USERNAME=...
+TURN_CREDENTIAL=...
+```
+The backend serves these to the browser at `GET /api/ice` and uses them on the
+server peer, so both ends agree. For the simplest guaranteed-free demo, run the
+backend **locally** with both caller and teammate on the same network (STUN only).
 
 ### Provider comparison (why Twilio for the demo)
 

@@ -16,6 +16,7 @@ from .base import TelephonyProvider
 from .exotel_provider import ExotelTelephonyProvider
 from .mock import _new_mock
 from .twilio_provider import TwilioTelephonyProvider
+from .webrtc_provider import WebRTCTelephonyProvider
 
 
 @lru_cache
@@ -26,6 +27,8 @@ def get_telephony_provider() -> TelephonyProvider:
         provider: TelephonyProvider = TwilioTelephonyProvider()
     elif name == "exotel":
         provider = ExotelTelephonyProvider()
+    elif name == "webrtc":
+        provider = WebRTCTelephonyProvider()
     elif name == "mock":
         provider = _new_mock()
     else:
