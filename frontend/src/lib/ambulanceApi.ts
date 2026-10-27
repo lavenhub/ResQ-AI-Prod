@@ -191,9 +191,16 @@ export interface ReceptionBookingInfo {
 export const receptionBookingInfo = (bookingId: string) =>
   apiFetch<ReceptionBookingInfo>(`/api/ambulance/reception/booking/${bookingId}`);
 
-/** The link the caller shares with the teammate to answer the call. */
-export const receptionUrl = (bookingId: string) =>
-  `${typeof window !== "undefined" ? window.location.origin : ""}/reception?booking=${bookingId}`;
+/** The link the caller shares with the teammate to answer the call.
+ * Uses the public web URL (VITE_PUBLIC_WEB_URL) when set, so the link is a real
+ * shareable URL even from inside a Capacitor APK (where window.location.origin
+ * is "localhost"). Falls back to the current origin for plain web use. */
+export const receptionUrl = (bookingId: string) => {
+  const base =
+    (import.meta.env.VITE_PUBLIC_WEB_URL as string | undefined) ||
+    (typeof window !== "undefined" ? window.location.origin : "");
+  return `${base.replace(/\/+$/, "")}/reception?booking=${bookingId}`;
+};
 
 // ── Honest, user-facing status mapping ─────────────────────────────────────────
 // The label says only what the backend has recorded — never a fabricated ETA or

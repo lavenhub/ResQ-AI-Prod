@@ -20,6 +20,10 @@ dist-ssr
 .env
 .env.*
 !.env.example
+# .env.production holds only VITE_* values, which are PUBLIC (baked into the
+# client bundle) — committing it lets `vite build` (e.g. for the Capacitor APK)
+# target the right backend without a shell env var. Never put secrets in it.
+!.env.production
 
 # Wrangler / Cloudflare
 .wrangler/
