@@ -112,6 +112,21 @@ async def ice_servers_client() -> list[dict]:
     return servers
 
 
+def _server_turn_order(urls: list[str]) -> list[str]:
+    """aiortc uses only the FIRST valid TURN url (see rtcicetransport.
+    connection_kwargs). Many cloud hosts (e.g. Render) block outbound UDP, so the
+    UDP relay never allocates. Order TLS/TCP first so the SERVER peer picks a
+    TCP-based relay that works through outbound-TCP-only egress. (Browsers get the
+    natural order via ice_servers_client and still try UDP first.)"""
+    def rank(u: str) -> int:
+        if u.startswith("turns:"):
+            return 0                 # TLS over TCP — most egress-friendly
+        if "transport=tcp" in u:
+            return 1                 # plain TCP
+        return 2                     # UDP last
+    return sorted(urls, key=rank)
+
+
 async def ice_servers_aiortc() -> list:
     """The same ICE servers as pipecat/aiortc IceServer objects for the server peer."""
     from pipecat.transports.smallwebrtc.connection import IceServer
@@ -122,7 +137,7 @@ async def ice_servers_aiortc() -> list:
     if turn:
         servers.append(
             IceServer(
-                urls=turn["urls"],
+                urls=_server_turn_order(turn["urls"]),
                 username=turn.get("username") or None,
                 credential=turn.get("credential") or None,
             )
