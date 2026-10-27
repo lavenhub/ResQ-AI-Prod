@@ -303,6 +303,16 @@ class Settings:
     turn_urls: list[str] = field(default_factory=lambda: _get_list("TURN_URLS", []))
     turn_username: str = field(default_factory=lambda: _get("TURN_USERNAME"))
     turn_credential: str = field(default_factory=lambda: _get("TURN_CREDENTIAL"))
+    # Cloudflare TURN (recommended for cloud): set these two and the backend MINTS
+    # short-lived TURN credentials on demand (for both the browser and the server
+    # peer), so there is nothing to copy or expire. Get them from the Cloudflare
+    # dashboard: Realtime → TURN → create a key → Token ID + API Token.
+    cloudflare_turn_token_id: str = field(
+        default_factory=lambda: _get("CLOUDFLARE_TURN_TOKEN_ID") or _get("CLOUDFLARE_TURN_KEY_ID")
+    )
+    cloudflare_turn_api_token: str = field(
+        default_factory=lambda: _get("CLOUDFLARE_TURN_API_TOKEN")
+    )
 
     # ── Misc ──────────────────────────────────────────────────────────────
     log_level: str = field(default_factory=lambda: _get("LOG_LEVEL", "INFO"))

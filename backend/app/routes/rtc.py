@@ -64,7 +64,7 @@ async def offer(
     manager = request.app.state.session_manager
     tasks: set[asyncio.Task] = request.app.state.voice_tasks
 
-    connection = SmallWebRTCConnection(ice_servers=ice_servers_aiortc())
+    connection = SmallWebRTCConnection(ice_servers=await ice_servers_aiortc())
     await connection.initialize(sdp=body.sdp, type=body.type)
     session_id = getattr(connection, "pc_id", None) or getattr(connection, "id", None) or "sess"
 

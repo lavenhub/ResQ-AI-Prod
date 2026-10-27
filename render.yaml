@@ -35,6 +35,13 @@ services:
       # Public https URL of THIS service (e.g. https://resqai-backend.onrender.com).
       - key: PUBLIC_APP_URL
         sync: false
+      # Cloudflare TURN (needed for WebRTC audio on Render, which blocks UDP).
+      # The backend mints short-lived TURN credentials from these automatically —
+      # nothing to copy or expire. Dashboard: Realtime -> TURN -> create a key.
+      - key: CLOUDFLARE_TURN_TOKEN_ID
+        sync: false
+      - key: CLOUDFLARE_TURN_API_TOKEN
+        sync: false
       # Comma-separated allowed origins — set to your Vercel frontend URL.
       - key: CORS_ORIGINS
         sync: false

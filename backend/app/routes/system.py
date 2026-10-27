@@ -18,7 +18,7 @@ async def ice() -> dict:
 
     TURN credentials are meant to be client-visible — that is how WebRTC relays
     work — so serving them here is expected, not a secret leak."""
-    return {"iceServers": ice_servers_client()}
+    return {"iceServers": await ice_servers_client()}
 
 
 @router.get("/health")
