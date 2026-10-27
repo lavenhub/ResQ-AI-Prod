@@ -1,8 +1,10 @@
 # ResQAI backend — pinned to versions verified on Python 3.11.
 # Install:  py -3.11 -m venv .venv && .venv/Scripts/pip install -r requirements.txt
-
-# Real-time voice agent: Pipecat + WebRTC (aiortc) + Gemini Live + Silero VAD.
-pipecat-ai[webrtc,google,silero]==1.13.0
+#
+# The AI assistant is a plain HTTPS call to Gemini's generateContent API (see
+# app/agent.py) using httpx — no WebRTC / real-time-media stack — so the backend
+# runs cleanly on ordinary hosts (Render, etc.). Browser speech (TTS/STT) is
+# handled client-side.
 
 # Web API
 fastapi==0.156.4

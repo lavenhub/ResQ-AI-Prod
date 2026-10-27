@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import QRCode from "qrcode";
-import { apiUrl, authHeader, getIceServers } from "@/lib/api";
-import type { TranscriptEntry, VoiceStatus } from "@/lib/types";
+import { apiUrl, authHeader } from "@/lib/api";
+import { triggerSos } from "@/lib/emergencyApi";
+import type { TranscriptEntry } from "@/lib/types";
 
 function uid() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
-/** Short incident label from text (drives email + which vehicle is dispatched) */
+/** Short incident label from text (drives email + which vehicle is shown) */
 function detectIncidentType(text: string): string {
   const t = text.toLowerCase();
   if (/heart|chest|cardiac/.test(t)) return "Heart Attack";
@@ -21,9 +22,17 @@ function detectIncidentType(text: string): string {
   return "Emergency";
 }
 
+/** Map incident → which simulated vehicle to show on the map */
+function vehicleForIncident(incident: string): "ambulance" | "fire" | "police" {
+  const t = incident.toLowerCase();
+  if (/fire|burn|smoke|gas|explos/.test(t)) return "fire";
+  if (/theft|rob|assault|attack|knife|weapon|crime|threat/.test(t)) return "police";
+  return "ambulance";
+}
+
 function isEmergencyText(text: string): boolean {
   const t = text.toLowerCase();
-  return /\bi am\b|\bi'm\b|\bi was\b|\bi have\b|\bhelp\b|\binjured\b|\bhurt\b|\bbleeding\b|\baccident\b|\bcrash\b|\bfire\b|\bchest pain\b|\bbreathe\b|\bfell\b|\bstuck\b|\bemergency\b|\bsnake\b|\bbit|\bpain\b|\bburn/.test(
+  return /\bi am\b|\bi'm\b|\bi was\b|\bi have\b|\bhelp\b|\binjured\b|\bhurt\b|\bbleeding\b|\baccident\b|\bcrash\b|\bfire\b|\bchest pain\b|\bbreathe\b|\bfell\b|\bstuck\b|\bemergency\b|\bsnake\b|\bbit|\bpain\b|\bburn|\bchoking\b|\bunconscious\b|\bcollapse\b|\bdrown/.test(
     t,
   );
 }
@@ -37,6 +46,28 @@ function loadLocal<T>(key: string, fallback: T): T {
   }
 }
 
+/** BCP-47 code for browser speech, from the app's language name. */
+function speechLang(language: string): string {
+  const map: Record<string, string> = {
+    English: "en-IN",
+    Hindi: "hi-IN",
+    Marathi: "mr-IN",
+    Bengali: "bn-IN",
+    Telugu: "te-IN",
+    Tamil: "ta-IN",
+    Gujarati: "gu-IN",
+    Kannada: "kn-IN",
+    Malayalam: "ml-IN",
+    Punjabi: "pa-IN",
+  };
+  return map[language] || "en-IN";
+}
+
+/** Strip simple markdown so TTS doesn't read asterisks/underscores aloud. */
+function forSpeech(text: string): string {
+  return text.replace(/[*_`#>]/g, "").replace(/\s+/g, " ").trim();
+}
+
 export interface HistoryEntry {
   id: string;
   date: string;
@@ -47,27 +78,60 @@ export interface HistoryEntry {
   location: { lat: number; lng: number } | null;
 }
 
+type ChatStatus = "idle" | "thinking" | "speaking";
+
 export function useVoiceAgent() {
-  const [status, setStatus] = useState<VoiceStatus>("idle");
+  const [status, setStatus] = useState<ChatStatus>("idle");
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [hasApiKey, setHasApiKey] = useState<boolean>(true);
   const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [gpsError, setGpsError] = useState<string | null>(null);
   const [gpsAccuracy, setGpsAccuracy] = useState<number | null>(null);
   const [address, setAddress] = useState<string | null>(null);
-  const [isMuted, setIsMuted] = useState(false);
+  const [language, setLanguage] = useState<string>(() => loadLocal("resq_language", "English"));
   const [medicalPassQr, setMedicalPassQr] = useState<string | null>(null);
   const [incidentType, setIncidentType] = useState<string>("Emergency");
+  const [emergencyActive, setEmergencyActive] = useState(false);
+  const [alertSent, setAlertSent] = useState<{ count: number; detail?: string } | null>(null);
+  const [vehicleDispatch, setVehicleDispatch] = useState<{
+    vehicleType: "ambulance" | "fire" | "police";
+    incidentType: string;
+    userCoords: { lat: number; lng: number };
+  } | null>(null);
 
-  // ── refs ──────────────────────────────────────────────────────────────────
-  const pcRef = useRef<RTCPeerConnection | null>(null);
-  const micStreamRef = useRef<MediaStream | null>(null);
-  const audioElRef = useRef<HTMLAudioElement | null>(null);
-  const sessionStartRef = useRef<number>(0);
-  const transcriptRef = useRef<TranscriptEntry[]>([]);
+  // Speech
+  const [speakEnabled, setSpeakEnabled] = useState<boolean>(() => loadLocal("resq_speak", true));
+  const [listening, setListening] = useState(false);
+  const sttSupported =
+    typeof window !== "undefined" &&
+    !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
+
+  // refs
   const coordsRef = useRef<{ lat: number; lng: number } | null>(null);
   const addressRef = useRef<string | null>(null);
   const incidentRef = useRef<string>("Emergency");
+  const dispatchedRef = useRef(false);
+  const transcriptRef = useRef<TranscriptEntry[]>([]);
+  const sessionStartRef = useRef<number>(Date.now());
+  const recognitionRef = useRef<any>(null);
+  const languageRef = useRef<string>(language);
+
+  useEffect(() => {
+    languageRef.current = language;
+    try {
+      localStorage.setItem("resq_language", JSON.stringify(language));
+    } catch {
+      /* ignore */
+    }
+  }, [language]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("resq_speak", JSON.stringify(speakEnabled));
+    } catch {
+      /* ignore */
+    }
+  }, [speakEnabled]);
 
   const addEntry = useCallback((sender: TranscriptEntry["sender"], text: string) => {
     setTranscript((p) => {
@@ -77,7 +141,7 @@ export function useVoiceAgent() {
     });
   }, []);
 
-  // Reverse-geocode coordinates -> human-readable address (free OpenStreetMap Nominatim)
+  // ── GPS ─────────────────────────────────────────────────────────────────────
   const reverseGeocode = useCallback(async (lat: number, lng: number) => {
     try {
       const r = await fetch(
@@ -86,7 +150,6 @@ export function useVoiceAgent() {
       );
       const d = await r.json();
       const a = d.address || {};
-      // Build a concise, readable address rather than the full display_name
       const parts = [
         a.road || a.neighbourhood || a.suburb,
         a.suburb && a.suburb !== a.road ? a.suburb : null,
@@ -99,7 +162,7 @@ export function useVoiceAgent() {
         addressRef.current = nice;
       }
     } catch {
-      /* keep coords-only if geocoding fails */
+      /* keep coords-only */
     }
   }, []);
 
@@ -130,13 +193,29 @@ export function useVoiceAgent() {
     refreshGps();
   }, [refreshGps]);
 
-  // ── QR / history ──────────────────────────────────────────────────────────
+  // ── Text-to-speech ──────────────────────────────────────────────────────────
+  const speak = useCallback(
+    (text: string) => {
+      if (!speakEnabled || typeof window === "undefined" || !window.speechSynthesis) return;
+      try {
+        window.speechSynthesis.cancel();
+        const u = new SpeechSynthesisUtterance(forSpeech(text));
+        u.lang = speechLang(languageRef.current);
+        u.rate = 1.02;
+        u.onstart = () => setStatus("speaking");
+        u.onend = () => setStatus("idle");
+        u.onerror = () => setStatus("idle");
+        window.speechSynthesis.speak(u);
+      } catch {
+        /* ignore */
+      }
+    },
+    [speakEnabled],
+  );
+
+  // ── QR / history ────────────────────────────────────────────────────────────
   const generateMedicalQr = useCallback(
-    async (
-      incType: string,
-      sessionTranscript: TranscriptEntry[],
-      location: { lat: number; lng: number } | null,
-    ): Promise<string> => {
+    async (incType: string, snap: TranscriptEntry[], location: { lat: number; lng: number } | null) => {
       const passData = {
         name: loadLocal("resq_name", ""),
         phone: localStorage.getItem("resq_phone") || "",
@@ -148,7 +227,7 @@ export function useVoiceAgent() {
         date: new Date().toISOString(),
         location: location ? `${location.lat.toFixed(5)},${location.lng.toFixed(5)}` : "Unknown",
         address: addressRef.current || "",
-        summary: sessionTranscript
+        summary: snap
           .filter((t) => t.sender !== "system")
           .slice(-8)
           .map((t) => `${t.sender === "user" ? "Patient" : "Dispatcher"}: ${t.text}`)
@@ -166,216 +245,164 @@ export function useVoiceAgent() {
     [],
   );
 
-  const saveToHistory = useCallback(
-    async (
-      incType: string,
-      sessionTranscript: TranscriptEntry[],
-      startTime: number,
-      location: { lat: number; lng: number } | null,
-    ) => {
-      const qrDataUrl = await generateMedicalQr(incType, sessionTranscript, location);
-      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+  const endSession = useCallback(async () => {
+    try {
+      window.speechSynthesis?.cancel();
+    } catch {}
+    const snap = transcriptRef.current;
+    if (snap.some((t) => t.sender !== "system")) {
+      const qr = await generateMedicalQr(incidentRef.current, snap, coordsRef.current);
+      setMedicalPassQr(qr);
+      const elapsed = Math.floor((Date.now() - sessionStartRef.current) / 1000);
       const entry: HistoryEntry = {
         id: uid(),
         date: new Date().toISOString(),
-        incidentType: incType,
+        incidentType: incidentRef.current,
         duration: `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`,
-        transcript: sessionTranscript,
-        qrDataUrl,
-        location,
+        transcript: snap,
+        qrDataUrl: qr,
+        location: coordsRef.current,
       };
       const existing: HistoryEntry[] = loadLocal("resq_history", []);
       localStorage.setItem("resq_history", JSON.stringify([entry, ...existing].slice(0, 50)));
-      return qrDataUrl;
-    },
-    [generateMedicalQr],
-  );
+      return qr;
+    }
+    return null;
+  }, [generateMedicalQr]);
 
-  // ── Emergency side-effects (email + vehicle), fired from the transcript ─────
-  const handleEmergencyText = useCallback(
-    (userText: string) => {
-      if (!isEmergencyText(userText)) return;
-      const inc = detectIncidentType(userText);
+  // ── Emergency trigger (real email + simulated ambulance) ────────────────────
+  const triggerEmergency = useCallback(
+    async (type?: string) => {
+      const inc = type || incidentRef.current || "Emergency";
       setIncidentType(inc);
       incidentRef.current = inc;
+      setEmergencyActive(true);
 
-      // We only DETECT the incident type here, to seed the ambulance-coordination
-      // panel. Contact alerting is handled by the real server-side EMAIL pipeline
-      // and the voice agent's trigger_sos_alert tool — never a browser-side send.
-      // There is deliberately NO simulated vehicle: real ambulance progress is
-      // shown by AmbulanceCoordination from the backend call/booking state.
+      // Mock ambulance on the map (clearly labelled "demo" in the UI).
+      if (coordsRef.current) {
+        setVehicleDispatch({
+          vehicleType: vehicleForIncident(inc),
+          incidentType: inc,
+          userCoords: coordsRef.current,
+        });
+      }
+      if (dispatchedRef.current) return; // email only once per session
+      dispatchedRef.current = true;
+
+      // REAL: alert the caller's verified contacts by email via the SOS pipeline.
+      try {
+        const res = await triggerSos({
+          incident_type: inc,
+          victim_name: loadLocal("resq_name", "") || undefined,
+          latitude: coordsRef.current?.lat,
+          longitude: coordsRef.current?.lng,
+          address: addressRef.current || undefined,
+          idempotency_key: `app-${sessionStartRef.current}`,
+        });
+        setAlertSent({ count: res.notifications.length });
+        addEntry(
+          "system",
+          `✅ Emergency recorded. Notifying ${res.notifications.length} emergency contact(s) by email. 🚑 Simulated ambulance shown on the map (demo — call 112/108 for real dispatch).`,
+        );
+      } catch (e: any) {
+        const msg = String(e?.message || e);
+        const status = e?.status;
+        if (status === 401) {
+          setAlertSent({ count: 0, detail: "not signed in" });
+          addEntry("system", "⚠️ Sign in to alert your saved emergency contacts.");
+        } else if (status === 409) {
+          setAlertSent({ count: 0, detail: "no verified contacts" });
+          addEntry(
+            "system",
+            "⚠️ No verified emergency contacts to email. Add one in Profile. (Simulated ambulance still shown for the demo.)",
+          );
+        } else {
+          addEntry("system", `⚠️ Could not send contact alerts: ${msg}`);
+        }
+      }
     },
-    [],
+    [addEntry],
   );
 
-  // ── RTVI data-channel messages from the bot ─────────────────────────────────
-  const handleRtvi = useCallback(
-    (raw: string) => {
-      let msg: any;
-      try {
-        msg = JSON.parse(raw);
-      } catch {
-        return;
+  // ── Send a chat message to the agent ────────────────────────────────────────
+  const sendMessage = useCallback(
+    async (text: string) => {
+      const msg = text.trim();
+      if (!msg || status === "thinking") return;
+      addEntry("user", msg);
+
+      // Detect an emergency from the user's words → fire the real email + sim once.
+      if (isEmergencyText(msg)) {
+        const inc = detectIncidentType(msg);
+        incidentRef.current = inc;
+        setIncidentType(inc);
+        void triggerEmergency(inc);
       }
-      const data = msg.data || {};
-      switch (msg.type) {
-        case "user-started-speaking":
-          setStatus("listening");
-          break;
-        case "user-stopped-speaking":
-          setStatus("thinking");
-          break;
-        case "bot-started-speaking":
-          setStatus("speaking");
-          break;
-        case "bot-stopped-speaking":
-          setStatus("listening");
-          break;
-        case "user-transcription":
-          if (data.final && data.text?.trim()) {
-            addEntry("user", data.text.trim());
-            handleEmergencyText(data.text);
-          }
-          break;
-        case "bot-transcription":
-          if (data.text?.trim()) addEntry("resq", data.text.trim());
-          break;
-      }
-    },
-    [addEntry, handleEmergencyText],
-  );
 
-  // ── Terminate ───────────────────────────────────────────────────────────────
-  const terminateSession = useCallback(() => {
-    try {
-      pcRef.current?.close();
-    } catch {}
-    pcRef.current = null;
-    micStreamRef.current?.getTracks().forEach((t) => t.stop());
-    micStreamRef.current = null;
-    if (audioElRef.current) {
+      setStatus("thinking");
       try {
-        audioElRef.current.srcObject = null;
-        audioElRef.current.remove();
-      } catch {}
-      audioElRef.current = null;
-    }
+        const history = transcriptRef.current
+          .filter((t) => t.sender === "user" || t.sender === "resq")
+          .map((t) => ({ role: t.sender === "user" ? "user" : "assistant", content: t.text }));
+        history.push({ role: "user", content: msg });
 
-    const snap = transcriptRef.current;
-    if (snap.some((t) => t.sender !== "system")) {
-      saveToHistory(incidentRef.current, snap, sessionStartRef.current, coordsRef.current).then(
-        (qr) => setMedicalPassQr(qr),
-      );
-    }
-    setIsMuted(false);
-    setStatus("idle");
-  }, [saveToHistory]);
-
-  // ── Start the WebRTC call ────────────────────────────────────────────────────
-  const startSession = useCallback(
-    async (language: string) => {
-      try {
-        setStatus("connecting");
-        setTranscript([]);
-        transcriptRef.current = [];
-        setMedicalPassQr(null);
-        setIncidentType("Emergency");
-        incidentRef.current = "Emergency";
-        sessionStartRef.current = Date.now();
-
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-        });
-        micStreamRef.current = stream;
-
-        const pc = new RTCPeerConnection({ iceServers: await getIceServers() });
-        pcRef.current = pc;
-
-        // Data channel for RTVI messages (transcripts, speaking state)
-        const dc = pc.createDataChannel("chat");
-        dc.onmessage = (e) => handleRtvi(e.data);
-        pc.ondatachannel = (e) => {
-          e.channel.onmessage = (ev) => handleRtvi(ev.data);
-        };
-
-        stream.getTracks().forEach((t) => pc.addTrack(t, stream));
-
-        // Play the bot's audio
-        const audioEl = document.createElement("audio");
-        audioEl.autoplay = true;
-        (audioEl as any).playsInline = true;
-        audioEl.style.display = "none";
-        document.body.appendChild(audioEl);
-        audioElRef.current = audioEl;
-        pc.ontrack = (e) => {
-          audioEl.srcObject = e.streams[0];
-          audioEl.play().catch(() => {});
-        };
-
-        pc.onconnectionstatechange = () => {
-          const s = pc.connectionState;
-          if (s === "connected") {
-            setStatus("listening");
-            addEntry("system", "Dispatcher on the line — just speak.");
-          }
-          if (s === "failed" || s === "closed") setStatus("idle");
-        };
-
-        await pc.setLocalDescription(await pc.createOffer());
-        await new Promise<void>((resolve) => {
-          if (pc.iceGatheringState === "complete") return resolve();
-          const check = () => {
-            if (pc.iceGatheringState === "complete") {
-              pc.removeEventListener("icegatheringstatechange", check);
-              resolve();
-            }
-          };
-          pc.addEventListener("icegatheringstatechange", check);
-          setTimeout(resolve, 2000);
-        });
-
-        const resp = await fetch(apiUrl("/api/rtc/offer"), {
+        const res = await fetch(apiUrl("/api/agent/chat"), {
           method: "POST",
           headers: { "Content-Type": "application/json", ...authHeader() },
           body: JSON.stringify({
-            sdp: pc.localDescription!.sdp,
-            type: pc.localDescription!.type,
-            language,
+            messages: history,
+            language: languageRef.current,
             lat: coordsRef.current?.lat,
             lng: coordsRef.current?.lng,
             address: addressRef.current,
           }),
         });
-        if (!resp.ok) throw new Error(`offer failed: ${resp.status}`);
-        await pc.setRemoteDescription(await resp.json());
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.detail || `Request failed: ${res.status}`);
+        const reply = data.reply as string;
+        addEntry("resq", reply);
+        speak(reply);
+        if (!speakEnabled) setStatus("idle");
       } catch (e: any) {
-        setStatus("error");
-        addEntry("system", `Failed to start: ${e?.message || e}`);
+        setStatus("idle");
+        addEntry("system", `⚠️ Assistant unavailable: ${e?.message || e}`);
       }
     },
-    [addEntry, handleRtvi],
+    [status, addEntry, triggerEmergency, speak, speakEnabled],
   );
 
-  // ── Mute toggle ───────────────────────────────────────────────────────────
-  const toggleMute = useCallback(() => {
-    setIsMuted((m) => {
-      const next = !m;
-      micStreamRef.current?.getAudioTracks().forEach((t) => {
-        t.enabled = !next;
-      });
-      return next;
-    });
+  // ── Speech-to-text (browser) ────────────────────────────────────────────────
+  const startListening = useCallback(() => {
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) return;
+    try {
+      window.speechSynthesis?.cancel();
+      const rec = new SR();
+      rec.lang = speechLang(languageRef.current);
+      rec.interimResults = false;
+      rec.maxAlternatives = 1;
+      rec.continuous = false;
+      rec.onstart = () => setListening(true);
+      rec.onerror = () => setListening(false);
+      rec.onend = () => setListening(false);
+      rec.onresult = (ev: any) => {
+        const said = ev.results?.[0]?.[0]?.transcript?.trim();
+        setListening(false);
+        if (said) void sendMessage(said);
+      };
+      recognitionRef.current = rec;
+      rec.start();
+    } catch {
+      setListening(false);
+    }
+  }, [sendMessage]);
+
+  const stopListening = useCallback(() => {
+    try {
+      recognitionRef.current?.stop();
+    } catch {}
+    setListening(false);
   }, []);
-
-  // ── Text input (fallback demo path — triggers alerts without voice) ─────────
-  const sendTextMessage = useCallback(
-    async (text: string) => {
-      if (!text.trim()) return;
-      addEntry("user", text);
-      handleEmergencyText(text);
-    },
-    [addEntry, handleEmergencyText],
-  );
 
   const copyLocation = useCallback(async () => {
     if (!coordsRef.current) return;
@@ -386,9 +413,12 @@ export function useVoiceAgent() {
 
   useEffect(() => {
     return () => {
-      terminateSession();
+      try {
+        window.speechSynthesis?.cancel();
+        recognitionRef.current?.stop();
+      } catch {}
     };
-  }, []); // eslint-disable-line
+  }, []);
 
   return {
     status,
@@ -398,14 +428,23 @@ export function useVoiceAgent() {
     gpsError,
     gpsAccuracy,
     address,
-    isMuted,
-    medicalPassQr,
+    language,
+    setLanguage,
     incidentType,
-    startSession,
-    terminateSession,
-    toggleMute,
-    sendTextMessage,
-    copyLocation,
+    emergencyActive,
+    vehicleDispatch,
+    alertSent,
+    medicalPassQr,
+    speakEnabled,
+    setSpeakEnabled,
+    sttSupported,
+    listening,
+    startListening,
+    stopListening,
+    sendMessage,
+    triggerEmergency,
+    endSession,
     refreshGps,
+    copyLocation,
   };
 }

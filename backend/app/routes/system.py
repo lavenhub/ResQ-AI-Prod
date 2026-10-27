@@ -7,18 +7,8 @@ from fastapi import APIRouter
 from .. import __version__
 from ..config import get_settings
 from ..services.email import get_provider
-from ..webrtc_ice import ice_servers_client
 
 router = APIRouter()
-
-
-@router.get("/api/ice")
-async def ice() -> dict:
-    """ICE servers (STUN, and TURN if configured) for the browser's WebRTC peer.
-
-    TURN credentials are meant to be client-visible — that is how WebRTC relays
-    work — so serving them here is expected, not a secret leak."""
-    return {"iceServers": await ice_servers_client()}
 
 
 @router.get("/health")
@@ -53,15 +43,15 @@ async def email_health() -> dict:
 
 @router.get("/api/status")
 async def status() -> dict:
-    """The frontend reads `hasApiKey` to know whether real voice is available.
+    """The frontend reads `hasApiKey` to know whether the AI assistant is available.
 
-    We report the TRUE state: voice is only enabled when an AI provider key is
-    configured. No key => the UI should surface that voice is unavailable rather
-    than imply a working call.
+    We report the TRUE state: the assistant is only enabled when a Gemini key is
+    configured. No key => the UI surfaces that the assistant is unavailable rather
+    than imply a working agent.
     """
     settings = get_settings()
     return {
         "hasApiKey": settings.voice_enabled,
-        "voiceProvider": "gemini-live" if settings.voice_enabled else None,
+        "agentModel": settings.agent_model if settings.voice_enabled else None,
         "version": __version__,
     }

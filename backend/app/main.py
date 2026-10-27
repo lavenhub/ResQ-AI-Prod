@@ -19,21 +19,16 @@ from . import __version__
 from .config import get_settings
 from .db import init_db
 from .routes import (
-    ambulance,
-    ambulance_reception,
+    agent,
     auth,
     contacts,
     email_webhook,
     emergency,
     incidents,
-    rtc,
     system,
-    telephony_webhook,
 )
 from .services.email import get_provider
 from .services.notifier import NotificationWorker
-from .services.telephony import get_telephony_provider
-from .voice.session import SessionManager
 
 
 def _configure_logging(level: str) -> None:
@@ -46,8 +41,6 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     _configure_logging(settings.log_level)
     init_db()
-    app.state.session_manager = SessionManager(max_concurrent=settings.max_concurrent_sessions)
-    app.state.voice_tasks = set()
 
     # Surface email provider readiness at startup (actionable, never silent).
     provider = get_provider()
@@ -62,20 +55,6 @@ async def lifespan(app: FastAPI):
     else:
         logger.info(f"Email provider '{provider.name}' ready for real sending")
 
-    # Surface telephony provider readiness at startup (actionable, never silent).
-    tele = get_telephony_provider()
-    tele_problems = tele.validate_configuration()
-    if tele.is_mock:
-        logger.warning(
-            "Telephony provider = MOCK — NO real outbound call will be placed. Set "
-            "TELEPHONY_PROVIDER=twilio (+ credentials, TELEPHONY_CALLER_ID, "
-            "TELEPHONY_BASE_URL) for real ambulance-coordination calls."
-        )
-    elif tele_problems:
-        logger.warning(f"Telephony provider '{tele.name}' NOT ready: {'; '.join(tele_problems)}")
-    else:
-        logger.info(f"Telephony provider '{tele.name}' ready for real outbound calls")
-
     # Start the background notification worker (durable outbox processor).
     app.state.notification_worker = NotificationWorker()
     if settings.email_worker_autostart:
@@ -84,13 +63,10 @@ async def lifespan(app: FastAPI):
         logger.info("Notification worker autostart disabled (EMAIL_WORKER_AUTOSTART=false)")
 
     logger.info(
-        f"ResQAI backend {__version__} ready — voice "
-        f"{'ENABLED (gemini-live)' if settings.voice_enabled else 'DISABLED (no GEMINI_API_KEY)'}"
+        f"ResQAI backend {__version__} ready — assistant "
+        f"{'ENABLED' if settings.voice_enabled else 'DISABLED (no GEMINI_API_KEY)'}"
     )
     yield
-    # Cancel any in-flight voice sessions on shutdown.
-    for task in list(app.state.voice_tasks):
-        task.cancel()
     await app.state.notification_worker.stop()
 
 
@@ -127,10 +103,7 @@ def create_app() -> FastAPI:
     app.include_router(contacts.router)
     app.include_router(emergency.router)
     app.include_router(email_webhook.router)
-    app.include_router(rtc.router)
-    app.include_router(ambulance.router)
-    app.include_router(telephony_webhook.router)
-    app.include_router(ambulance_reception.router)
+    app.include_router(agent.router)
     return app
 
 

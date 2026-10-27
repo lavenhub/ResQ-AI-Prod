@@ -3,7 +3,6 @@ import { useEffect, useState } from "react";
 import { Bell, ShieldCheck, Trash2, X } from "lucide-react";
 import { AuthGuard } from "@/components/AuthGuard";
 import { BottomNav } from "@/components/BottomNav";
-import { AmbulanceDirectoryAdmin } from "@/components/AmbulanceDirectoryAdmin";
 import { INDIAN_LANGUAGES } from "@/lib/types";
 import { clearToken } from "@/lib/api";
 import {
@@ -308,9 +307,6 @@ function ProfilePage() {
                 </div>
               </div>
             </section>
-
-            {/* Ambulance directory admin (dial targets) */}
-            <AmbulanceDirectoryAdmin />
           </div>
 
           {/* ── Right column ── */}

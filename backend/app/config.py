@@ -78,6 +78,22 @@ class Settings:
     gemini_live_model: str = field(default_factory=lambda: _get("GEMINI_LIVE_MODEL"))
     gemini_voice: str = field(default_factory=lambda: _get("GEMINI_VOICE", "Puck"))
 
+    # ── Conversational text agent (HTTP; works on any host, incl. Render) ──
+    # The hosted assistant talks over a normal request/response Gemini call (no
+    # WebRTC). Model is overridable; defaults to a fast, fluent flash model.
+    # Default to a fast, non-"thinking" flash-lite model: snappy (~1.5s) and it
+    # returns COMPLETE replies (the "thinking" flash models burn the output
+    # budget on hidden reasoning and truncate). Override with AGENT_MODEL.
+    agent_model: str = field(
+        default_factory=lambda: _get("AGENT_MODEL") or _get("LLM_MODEL") or "gemini-flash-lite-latest"
+    )
+    agent_timeout_seconds: float = field(
+        default_factory=lambda: float(_get_int("AGENT_TIMEOUT_SECONDS", 30))
+    )
+    agent_max_output_tokens: int = field(
+        default_factory=lambda: _get_int("AGENT_MAX_OUTPUT_TOKENS", 600)
+    )
+
     # ── Session guardrails (cost / abuse control) ─────────────────────────
     max_session_seconds: int = field(
         default_factory=lambda: _get_int("MAX_SESSION_SECONDS", 300)

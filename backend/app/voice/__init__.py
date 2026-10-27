@@ -1,1 +1,1 @@
-"""Voice-agent package: Pipecat + Gemini Multimodal Live over WebRTC."""
+"""Agent persona + first-aid reference (text assistant). No WebRTC/pipecat."""

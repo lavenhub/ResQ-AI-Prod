@@ -47,26 +47,6 @@ export function authHeader(): Record<string, string> {
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 
-// ── WebRTC ICE servers ──────────────────────────────────────────────────────
-// Fetched from the backend (STUN, plus TURN if configured for cloud). Cached for
-// the session. Falls back to a public STUN server if the endpoint is unreachable.
-const _FALLBACK_ICE: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }];
-let _iceCache: RTCIceServer[] | null = null;
-
-export async function getIceServers(): Promise<RTCIceServer[]> {
-  if (_iceCache) return _iceCache;
-  try {
-    const res = await fetch(apiUrl("/api/ice"));
-    const data = await res.json();
-    _iceCache = Array.isArray(data?.iceServers) && data.iceServers.length
-      ? (data.iceServers as RTCIceServer[])
-      : _FALLBACK_ICE;
-  } catch {
-    _iceCache = _FALLBACK_ICE;
-  }
-  return _iceCache;
-}
-
 export async function apiFetch<T = any>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(apiUrl(path), {
     ...init,
