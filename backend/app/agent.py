@@ -94,26 +94,34 @@ class AgentError(RuntimeError):
     pass
 
 
-async def agent_reply(
-    messages: list[dict], *, language: str | None = None, location_hint: str | None = None
+async def gemini_generate(
+    system: str,
+    contents: list[dict],
+    *,
+    temperature: float = 0.6,
+    max_output_tokens: int | None = None,
+    response_json: bool = False,
 ) -> str:
-    """Return the assistant's reply for the given conversation. Raises AgentError
-    on a provider failure; the caller maps that to an HTTP error."""
+    """Low-level Gemini ``generateContent`` call shared by the chat assistant, the
+    ambulance coordinator, and the outcome extractor. Returns the text (or raw
+    JSON string when ``response_json``). Raises AgentError on any failure."""
     settings = get_settings()
     if not settings.gemini_api_key:
         raise AgentError("agent_not_configured")
-
-    contents = _to_contents(messages)
     if not contents:
         raise AgentError("no_messages")
 
+    gen_cfg: dict = {
+        "temperature": temperature,
+        "maxOutputTokens": max_output_tokens or settings.agent_max_output_tokens,
+    }
+    if response_json:
+        gen_cfg["responseMimeType"] = "application/json"
+
     body = {
-        "systemInstruction": {"parts": [{"text": build_agent_system(language, location_hint)}]},
+        "systemInstruction": {"parts": [{"text": system}]},
         "contents": contents,
-        "generationConfig": {
-            "temperature": 0.6,
-            "maxOutputTokens": settings.agent_max_output_tokens,
-        },
+        "generationConfig": gen_cfg,
     }
     url = _GEMINI_URL.format(model=settings.agent_model)
     try:
@@ -137,8 +145,17 @@ async def agent_reply(
     data = resp.json()
     cands = data.get("candidates") or []
     if not cands:
-        # Safety blocks etc. come back with no candidates.
         raise AgentError("no_candidates")
     parts = (cands[0].get("content") or {}).get("parts") or []
-    reply = "".join(p.get("text", "") for p in parts).strip()
+    return "".join(p.get("text", "") for p in parts).strip()
+
+
+async def agent_reply(
+    messages: list[dict], *, language: str | None = None, location_hint: str | None = None
+) -> str:
+    """Return the assistant's reply for the given conversation. Raises AgentError
+    on a provider failure; the caller maps that to an HTTP error."""
+    reply = await gemini_generate(
+        build_agent_system(language, location_hint), _to_contents(messages)
+    )
     return reply or "I'm here with you. Tell me what's happening."

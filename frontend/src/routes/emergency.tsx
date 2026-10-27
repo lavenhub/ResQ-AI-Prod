@@ -16,9 +16,17 @@ import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { AuthGuard } from "@/components/AuthGuard";
 import { BottomNav } from "@/components/BottomNav";
+import { ReceptionCall } from "@/components/ReceptionCall";
 import { useVoiceAgent } from "@/hooks/useVoiceAgent";
 import { useBottomBarClasses } from "@/hooks/useBottomBarPos";
 import { INDIAN_LANGUAGES } from "@/lib/types";
+import {
+  type AmbulanceServiceItem,
+  type Booking,
+  createBooking,
+  listServices,
+} from "@/lib/ambulanceApi";
+import { Phone } from "lucide-react";
 
 type VehicleType = "ambulance" | "fire" | "police";
 
@@ -159,6 +167,47 @@ function EmergencyPage() {
   const [textInput, setTextInput] = useState("");
   const logRef = useRef<HTMLDivElement>(null);
 
+  // Ambulance coordination (simulated reception call)
+  const [services, setServices] = useState<AmbulanceServiceItem[]>([]);
+  const [serviceId, setServiceId] = useState("");
+  const [callBookingId, setCallBookingId] = useState<string | null>(null);
+  const [callServiceName, setCallServiceName] = useState("");
+  const [starting, setStarting] = useState(false);
+  const [confirmedBooking, setConfirmedBooking] = useState<Booking | null>(null);
+  const [coordErr, setCoordErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    listServices()
+      .then((rows) => {
+        setServices(rows);
+        setServiceId(rows[0]?.id ?? "");
+      })
+      .catch(() => {});
+  }, []);
+
+  const startReceptionCall = async () => {
+    if (!serviceId || starting) return;
+    setStarting(true);
+    setCoordErr(null);
+    try {
+      const svc = services.find((s) => s.id === serviceId);
+      const b = await createBooking({
+        service_id: serviceId,
+        emergency_type: agent.incidentType !== "Emergency" ? agent.incidentType : undefined,
+        patient_condition: loadLocal("resq_conditions", "") || undefined,
+        latitude: agent.coords?.lat,
+        longitude: agent.coords?.lng,
+        address: agent.address || undefined,
+      });
+      setCallServiceName(svc?.name || "hospital reception");
+      setCallBookingId(b.id);
+    } catch (e: any) {
+      setCoordErr(e?.message || "Could not start the call");
+    } finally {
+      setStarting(false);
+    }
+  };
+
   const name = loadLocal("resq_name", "");
   const blood = loadLocal("resq_blood", "—");
   const age = loadLocal<number>("resq_age", 0);
@@ -279,6 +328,79 @@ function EmergencyPage() {
         >
           <Siren size={18} /> Trigger Emergency (SOS)
         </button>
+
+        {/* Ambulance coordination — simulated reception call */}
+        <div className="border-2 border-black bg-white p-4">
+          <div className="mb-1 text-xs font-black uppercase text-[#C62828]">
+            Coordinate an Ambulance
+          </div>
+          <p className="mb-3 text-[11px] leading-snug text-black/60">
+            ResQ's AI “calls” the hospital reception and explains the emergency, your condition and
+            coordinates. You answer as the receptionist (type or speak). Outcome is recorded below.
+          </p>
+          {coordErr && (
+            <div className="mb-2 border-2 border-red-600 bg-red-50 px-2 py-1 text-[11px] font-bold text-red-700">
+              {coordErr}
+            </div>
+          )}
+          {services.length > 0 ? (
+            <div className="space-y-2">
+              <select
+                value={serviceId}
+                onChange={(e) => setServiceId(e.target.value)}
+                className="w-full border-2 border-black bg-white px-3 py-2 text-sm font-semibold"
+              >
+                {services.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name} — {s.phone}
+                    {s.is_demo ? " (demo)" : ""}
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={startReceptionCall}
+                disabled={starting}
+                className="flex w-full items-center justify-center gap-2 border-2 border-black bg-black px-4 py-3 text-sm font-black uppercase tracking-wide text-white disabled:opacity-50"
+              >
+                <Phone size={16} /> {starting ? "Connecting…" : "Call reception (demo)"}
+              </button>
+            </div>
+          ) : (
+            <p className="text-[11px] text-black/50">Loading hospitals…</p>
+          )}
+        </div>
+
+        {/* Confirmed booking (from the reception call) */}
+        {confirmedBooking && confirmedBooking.booking_state === "BOOKING_CONFIRMED" && (
+          <div className="border-2 border-green-600 bg-green-50 p-4">
+            <div className="mb-2 flex items-center gap-2 text-sm font-black uppercase text-green-800">
+              <CheckCircle2 size={18} /> Ambulance booked — {confirmedBooking.service_name}
+            </div>
+            <div className="space-y-1 text-xs">
+              {confirmedBooking.eta_text && (
+                <div className="flex justify-between">
+                  <span className="font-bold uppercase text-black/60">ETA (as told)</span>
+                  <span className="font-black">{confirmedBooking.eta_text}</span>
+                </div>
+              )}
+              {confirmedBooking.charges_text && (
+                <div className="flex justify-between">
+                  <span className="font-bold uppercase text-black/60">Charges (as told)</span>
+                  <span className="font-black">{confirmedBooking.charges_text}</span>
+                </div>
+              )}
+              {confirmedBooking.booking_reference && (
+                <div className="flex justify-between">
+                  <span className="font-bold uppercase text-black/60">Booking ref</span>
+                  <span className="font-black">{confirmedBooking.booking_reference}</span>
+                </div>
+              )}
+            </div>
+            <p className="mt-2 text-[10px] text-green-700/80">
+              Confirmed by the receptionist in the demo call. For a real dispatch, call 112 / 108.
+            </p>
+          </div>
+        )}
 
         {/* Assistant chat */}
         <div className="border-2 border-black bg-white p-4">
@@ -422,6 +544,20 @@ function EmergencyPage() {
         End Emergency — View Pass &amp; History
       </button>
       <BottomNav />
+
+      {callBookingId && (
+        <ReceptionCall
+          bookingId={callBookingId}
+          serviceName={callServiceName}
+          language={agent.language}
+          onClose={() => setCallBookingId(null)}
+          onBooked={(b) => {
+            setConfirmedBooking(b);
+            // Confirmed by reception → animate the ambulance + alert contacts.
+            agent.triggerEmergency(b.emergency_type || agent.incidentType);
+          }}
+        />
+      )}
     </div>
   );
 }

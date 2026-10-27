@@ -53,8 +53,14 @@ class Settings:
             [
                 "http://localhost:3000",
                 "http://localhost:5173",
+                "http://localhost:5174",
                 "http://127.0.0.1:3000",
                 "http://127.0.0.1:5173",
+                # Capacitor Android/iOS WebView origins, so the same-WiFi APK's
+                # API calls to this local backend pass CORS with no extra setup.
+                "capacitor://localhost",
+                "http://localhost",
+                "https://localhost",
             ],
         )
     )

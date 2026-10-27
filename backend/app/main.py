@@ -20,6 +20,7 @@ from .config import get_settings
 from .db import init_db
 from .routes import (
     agent,
+    ambulance,
     auth,
     contacts,
     email_webhook,
@@ -104,6 +105,7 @@ def create_app() -> FastAPI:
     app.include_router(emergency.router)
     app.include_router(email_webhook.router)
     app.include_router(agent.router)
+    app.include_router(ambulance.router)
     return app
 
 
