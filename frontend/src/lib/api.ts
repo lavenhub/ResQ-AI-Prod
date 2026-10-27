@@ -1,4 +1,6 @@
-const BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? "";
+// Strip any trailing slash(es) so a VITE_API_URL like "https://host/" doesn't
+// produce double-slash request paths ("https://host//api/...") which 404.
+const BASE = ((import.meta.env.VITE_API_URL as string | undefined) ?? "").replace(/\/+$/, "");
 
 export const apiUrl = (path: string) => `${BASE}${path}`;
 
